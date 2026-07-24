@@ -2170,10 +2170,43 @@ function Inventario({ data, setData, money }) {
   const [cumplimiento, setCumplimiento] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
   const [newProduct, setNewProduct] = useState({ nombre: "", categoria: CATEGORIES[0], costo: "", precioVenta: "", stock: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ nombre: "", categoria: CATEGORIES[0], costo: "", precioVenta: "", stock: "" });
 
   const removeProduct = (id) => setData((d) => ({ ...d, products: d.products.filter((p) => p.id !== id) }));
   const updatePrecioVenta = (id, value) =>
     setData((d) => ({ ...d, products: d.products.map((p) => (p.id === id ? { ...p, precioVenta: Number(value) || 0 } : p)) }));
+
+  const startEditProduct = (p) => {
+    setEditingId(p.id);
+    setEditForm({
+      nombre: p.nombre,
+      categoria: p.categoria,
+      costo: String(p.costo ?? ""),
+      precioVenta: String(p.precioVenta ?? ""),
+      stock: String(p.stock ?? ""),
+    });
+  };
+  const cancelEditProduct = () => setEditingId(null);
+  const saveEditProduct = () => {
+    if (!editForm.nombre.trim()) return;
+    setData((d) => ({
+      ...d,
+      products: d.products.map((p) =>
+        p.id === editingId
+          ? {
+              ...p,
+              nombre: editForm.nombre.trim(),
+              categoria: editForm.categoria,
+              costo: Number(editForm.costo) || 0,
+              precioVenta: Number(editForm.precioVenta) || 0,
+              stock: Number(editForm.stock) || 0,
+            }
+          : p
+      ),
+    }));
+    setEditingId(null);
+  };
 
   const addProductManual = () => {
     if (!newProduct.nombre.trim()) return;
@@ -2306,6 +2339,71 @@ function Inventario({ data, setData, money }) {
             <tbody>
               {filtered.map((p) => {
                 const pct = marginPct(p.costo, p.precioVenta);
+                const isEditing = editingId === p.id;
+                if (isEditing) {
+                  return (
+                    <tr key={p.id} style={{ background: "#E7F0FC" }}>
+                      <td>
+                        <input
+                          value={editForm.nombre}
+                          onChange={(e) => setEditForm((f) => ({ ...f, nombre: e.target.value }))}
+                          style={{ width: "100%", minWidth: 110, padding: "5px 7px", borderRadius: 6, border: "1px solid var(--color-border)", fontSize: 12.5 }}
+                        />
+                      </td>
+                      <td>
+                        <select
+                          value={editForm.categoria}
+                          onChange={(e) => setEditForm((f) => ({ ...f, categoria: e.target.value }))}
+                          style={{ padding: "5px 7px", borderRadius: 6, border: "1px solid var(--color-border)", fontSize: 12.5 }}
+                        >
+                          {CATEGORIES.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          value={editForm.costo}
+                          onChange={(e) => setEditForm((f) => ({ ...f, costo: e.target.value }))}
+                          style={{ width: 75, padding: "5px 7px", borderRadius: 6, border: "1px solid var(--color-border)", fontSize: 12.5 }}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          value={editForm.precioVenta}
+                          onChange={(e) => setEditForm((f) => ({ ...f, precioVenta: e.target.value }))}
+                          style={{ width: 80, padding: "5px 7px", borderRadius: 6, border: "1px solid var(--color-border)", fontSize: 12.5 }}
+                        />
+                      </td>
+                      <td>
+                        <Badge tone={marginTone(pct)}>{pct.toFixed(1)}%</Badge>
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min={0}
+                          value={editForm.stock}
+                          onChange={(e) => setEditForm((f) => ({ ...f, stock: e.target.value }))}
+                          style={{ width: 65, padding: "5px 7px", borderRadius: 6, border: "1px solid var(--color-border)", fontSize: 12.5 }}
+                        />
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button className="link-btn" style={{ color: "var(--color-success)" }} disabled={!editForm.nombre.trim()} onClick={saveEditProduct}>
+                            Guardar
+                          </button>
+                          <button className="link-btn" style={{ color: "var(--color-text-muted)" }} onClick={cancelEditProduct}>
+                            Cancelar
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
                 return (
                   <tr key={p.id}>
                     <td style={{ fontWeight: 700 }}>{p.nombre}</td>
@@ -2328,9 +2426,14 @@ function Inventario({ data, setData, money }) {
                       {Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock} bajo</Badge> : <Badge tone="neutral">{p.stock}</Badge>}
                     </td>
                     <td>
-                      <button className="link-btn" onClick={() => removeProduct(p.id)}>
-                        Eliminar
-                      </button>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button className="link-btn" style={{ color: "var(--color-primary)" }} onClick={() => startEditProduct(p)}>
+                          Editar
+                        </button>
+                        <button className="link-btn" onClick={() => removeProduct(p.id)}>
+                          Eliminar
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
