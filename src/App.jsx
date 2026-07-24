@@ -2133,10 +2133,32 @@ function Inventario({ data, setData, money }) {
   const [catFilter, setCatFilter] = useState("Todos");
   const [planForm, setPlanForm] = useState({ nombre: "", comisionBs: "" });
   const [cumplimiento, setCumplimiento] = useState("");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newProduct, setNewProduct] = useState({ nombre: "", categoria: CATEGORIES[0], costo: "", precioVenta: "", stock: "" });
 
   const removeProduct = (id) => setData((d) => ({ ...d, products: d.products.filter((p) => p.id !== id) }));
   const updatePrecioVenta = (id, value) =>
     setData((d) => ({ ...d, products: d.products.map((p) => (p.id === id ? { ...p, precioVenta: Number(value) || 0 } : p)) }));
+
+  const addProductManual = () => {
+    if (!newProduct.nombre.trim()) return;
+    setData((d) => ({
+      ...d,
+      products: [
+        {
+          id: uid(),
+          nombre: newProduct.nombre.trim(),
+          categoria: newProduct.categoria,
+          costo: Number(newProduct.costo) || 0,
+          precioVenta: Number(newProduct.precioVenta) || 0,
+          stock: Number(newProduct.stock) || 0,
+        },
+        ...d.products,
+      ],
+    }));
+    setNewProduct({ nombre: "", categoria: newProduct.categoria, costo: "", precioVenta: "", stock: "" });
+    setShowAddForm(false);
+  };
 
   const addPlan = () => {
     if (!planForm.nombre.trim()) return;
@@ -2150,10 +2172,74 @@ function Inventario({ data, setData, money }) {
   return (
     <>
       <div className="panel">
-        <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
-          Los productos nuevos se agregan directamente desde <strong>Órdenes de Compra</strong>, al registrar la factura donde llegaron. Aquí
-          puedes ajustar el precio de venta de cada producto en cualquier momento, o eliminarlo.
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: showAddForm ? 14 : 0 }}>
+          Los productos también se agregan automáticamente desde <strong>Órdenes de Compra</strong>, al registrar la factura donde llegaron. Usa
+          el botón de abajo para ingresar mercancía existente manualmente (por ejemplo, tu inventario inicial).
         </div>
+        {!showAddForm ? (
+          <button className="btn btn-primary" onClick={() => setShowAddForm(true)}>
+            <Plus size={14} /> Agregar producto manualmente
+          </button>
+        ) : (
+          <div>
+            <div className="form-grid">
+              <div className="field">
+                <label>Nombre del producto</label>
+                <input
+                  value={newProduct.nombre}
+                  onChange={(e) => setNewProduct((f) => ({ ...f, nombre: e.target.value }))}
+                  placeholder="Ej. Cargador tipo C"
+                />
+              </div>
+              <div className="field">
+                <label>Categoría</label>
+                <select value={newProduct.categoria} onChange={(e) => setNewProduct((f) => ({ ...f, categoria: e.target.value }))}>
+                  {CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label>Costo</label>
+                <input
+                  type="number"
+                  value={newProduct.costo}
+                  onChange={(e) => setNewProduct((f) => ({ ...f, costo: e.target.value }))}
+                  placeholder="0.00"
+                />
+              </div>
+              <div className="field">
+                <label>Precio de venta</label>
+                <input
+                  type="number"
+                  value={newProduct.precioVenta}
+                  onChange={(e) => setNewProduct((f) => ({ ...f, precioVenta: e.target.value }))}
+                  placeholder="0.00"
+                />
+              </div>
+              <div className="field">
+                <label>Stock inicial</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={newProduct.stock}
+                  onChange={(e) => setNewProduct((f) => ({ ...f, stock: e.target.value }))}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-primary" disabled={!newProduct.nombre.trim()} onClick={addProductManual}>
+                <Check size={14} /> Guardar producto
+              </button>
+              <button className="btn btn-ghost" onClick={() => setShowAddForm(false)}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="panel">
