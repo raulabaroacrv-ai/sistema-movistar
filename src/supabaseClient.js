@@ -15,13 +15,25 @@ const ROW_ID = "main";
 
 export async function loadRemoteData() {
   if (!supabase) return null;
-  const { data, error } = await supabase.from("movistar_data").select("data").eq("id", ROW_ID).maybeSingle();
+  const { data, error } = await supabase.from("movistar_data").select("data, updated_at").eq("id", ROW_ID).maybeSingle();
   if (error) throw error;
-  return data ? data.data : null;
+  return data ? { data: data.data, updatedAt: data.updated_at } : null;
 }
 
-export async function saveRemoteData(payload) {
-  if (!supabase) return;
-  const { error } = await supabase.from("movistar_data").upsert({ id: ROW_ID, data: payload, updated_at: new Date().toISOString() });
+// Optimistic concurrency: only overwrite the row if nobody else has saved since we last
+// loaded/saved it (checked via updated_at). This protects against two open tabs/devices
+// silently stomping on each other's changes — if someone else saved in the meantime, this
+// returns { conflict: true } instead of overwriting their data, so the caller can warn the
+// user to reload before continuing instead of losing data silently.
+export async function saveRemoteData(payload, expectedUpdatedAt) {
+  if (!supabase) return { conflict: false, updatedAt: null };
+  const nowIso = new Date().toISOString();
+  let query = supabase.from("movistar_data").update({ data: payload, updated_at: nowIso }).eq("id", ROW_ID);
+  if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
+  const { data, error } = await query.select("updated_at");
   if (error) throw error;
+  if (expectedUpdatedAt && (!data || data.length === 0)) {
+    return { conflict: true, updatedAt: expectedUpdatedAt };
+  }
+  return { conflict: false, updatedAt: (data && data[0] && data[0].updated_at) || nowIso };
 }

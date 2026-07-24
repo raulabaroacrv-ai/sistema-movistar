@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   Smartphone,
   Wifi,
@@ -413,9 +413,25 @@ function SyncStatus({ dataSync }) {
     saving: { icon: Cloud, text: "Guardando en la nube…", color: "var(--color-warning)" },
     ok: { icon: Cloud, text: "Sincronizado con la nube", color: "var(--color-success)" },
     error: { icon: CloudOff, text: dataSync.error || "Error de sincronización", color: "var(--color-danger)" },
+    conflict: { icon: AlertTriangle, text: "Hay cambios más nuevos en la nube — recarga antes de seguir", color: "var(--color-danger)" },
   };
   const s = map[dataSync.status] || map["local-only"];
   const Icon = s.icon;
+  if (dataSync.status === "conflict") {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, color: s.color }} title={dataSync.error}>
+        <Icon size={13} />
+        {s.text}
+        <button
+          className="btn btn-primary btn-sm"
+          style={{ padding: "3px 10px" }}
+          onClick={() => window.location.reload()}
+        >
+          Recargar
+        </button>
+      </span>
+    );
+  }
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: s.color }} title={s.text}>
       <Icon size={13} className={dataSync.status === "saving" || dataSync.status === "loading" ? "spin" : ""} />
@@ -578,6 +594,7 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [bcvSync, setBcvSync] = useState({ status: "idle", fechaVigencia: null, lastCheck: null, error: null });
   const [dataSync, setDataSync] = useState({ status: supabaseConfigured ? "loading" : "local-only", lastSaved: null, error: null });
+  const remoteUpdatedAtRef = useRef(null);
   const money = useCurrency(data.currency);
 
   const syncTasaBCV = async () => {
@@ -603,7 +620,11 @@ export default function App() {
       let parsed = null;
       if (supabaseConfigured) {
         try {
-          parsed = await loadRemoteData();
+          const remote = await loadRemoteData();
+          if (remote) {
+            parsed = remote.data;
+            remoteUpdatedAtRef.current = remote.updatedAt;
+          }
         } catch (e) {
           console.error("No se pudo cargar desde Supabase, se usará la copia local si existe", e);
         }
@@ -646,7 +667,19 @@ export default function App() {
     setDataSync((s) => ({ ...s, status: "saving" }));
     const timeout = setTimeout(async () => {
       try {
-        await saveRemoteData(data);
+        const result = await saveRemoteData(data, remoteUpdatedAtRef.current);
+        if (result.conflict) {
+          // Someone else (another tab, device, or browser session) saved to the cloud since
+          // we last loaded/saved. Refuse to overwrite their changes silently — instead, tell
+          // the user to reload so they don't lose data without knowing it.
+          setDataSync({
+            status: "conflict",
+            lastSaved: null,
+            error: "Estos datos se actualizaron desde otra pestaña o dispositivo. Recarga la página para ver lo más reciente antes de seguir editando aquí.",
+          });
+          return;
+        }
+        remoteUpdatedAtRef.current = result.updatedAt;
         setDataSync({ status: "ok", lastSaved: new Date().toISOString(), error: null });
       } catch (e) {
         console.error("Error guardando en Supabase", e);
