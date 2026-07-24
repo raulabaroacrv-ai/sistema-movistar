@@ -1039,7 +1039,7 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
         <Card icon={Wifi} tone="primary" label="Líneas nuevas activadas" value={metrics.countLineas} sub={`${money(metrics.totalComisiones)} en comisiones`} />
         <Card icon={TrendingUp} tone={metrics.gananciaLineas >= 0 ? "success" : "danger"} label="Ganancia líneas nuevas" value={money(metrics.gananciaLineas)} sub={`Gastos: ${money(metrics.totalGastosLineas)}`} />
         <Card icon={RefreshCw} tone={metrics.gananciaCambios >= 0 ? "success" : "danger"} label="Cambio/Recuperación de línea" value={metrics.countCambios} sub={`Ganancia: ${money(metrics.gananciaCambios)}`} />
-        <Card icon={Package} tone="primary" label="Ganancia accesorios" value={money(metrics.gananciaAccesorios)} sub={`${metrics.countAccesorios} ventas · ingresos ${money(metrics.ingresosAccesorios)}`} />
+        <Card icon={Package} tone="primary" label="Ganancia accesorios/repuestos" value={money(metrics.gananciaAccesorios)} sub={`${metrics.countAccesorios} ventas · ingresos ${money(metrics.ingresosAccesorios)}`} />
         <Card icon={Smartphone} tone="primary" label="Ganancia teléfonos de contado" value={money(metrics.gananciaTelContado)} sub={`${metrics.countTelContado} ventas`} />
         <Card icon={CreditCard} tone="primary" label="Créditos activos" value={metrics.countTelCredito} sub={`Por cobrar: ${money(metrics.montoPorCobrar)}`} />
         <Card icon={Wallet} tone="success" label="Ganancia total del negocio" value={money(metrics.gananciaTotal)} sub="Líneas + accesorios + teléfonos de contado" />
@@ -1314,7 +1314,7 @@ function Ventas({ data, setData, money }) {
   const simProductsByCategoria = (cat) => data.products.filter((p) => p.categoria === cat);
   const simProductActual = simProductsByCategoria(simCategoria).find((p) => Number(p.stock) > 0) || simProductsByCategoria(simCategoria)[0];
   const cambioProductActual = simProductsByCategoria(cambioCategoria).find((p) => Number(p.stock) > 0) || simProductsByCategoria(cambioCategoria)[0];
-  const accProducts = data.products.filter((p) => p.categoria === "Accesorio");
+  const accProducts = data.products.filter((p) => p.categoria === "Accesorio" || p.categoria === "Repuestos");
   const telProducts = data.products.filter((p) => p.categoria === "Teléfono");
 
   const quitarDelCarrito = (key) => setCarritoFactura((its) => its.filter((it) => it.key !== key));
@@ -1653,7 +1653,7 @@ function Ventas({ data, setData, money }) {
           </div>
           <div className={`type-card ${tipoVenta === "accesorios" ? "selected" : ""}`} onClick={() => setTipoVenta("accesorios")}>
             <Package size={20} />
-            Accesorios
+            Accesorios / Repuestos
           </div>
           <div className={`type-card ${tipoVenta === "telefono" ? "selected" : ""}`} onClick={() => setTipoVenta("telefono")}>
             <Smartphone size={20} />
@@ -1755,10 +1755,10 @@ function Ventas({ data, setData, money }) {
               <div className="field">
                 <label>Producto</label>
                 <select value={accProductId} onChange={(e) => setAccProductId(e.target.value)}>
-                  <option value="">Seleccionar accesorio...</option>
+                  <option value="">Seleccionar accesorio o repuesto...</option>
                   {accProducts.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.nombre} ({money(p.precioVenta)} · stock {p.stock})
+                      {p.nombre} · {p.categoria} ({money(p.precioVenta)} · stock {p.stock})
                     </option>
                   ))}
                 </select>
