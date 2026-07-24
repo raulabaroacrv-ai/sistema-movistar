@@ -43,7 +43,7 @@ const PAYMENT_METHODS = ["Efectivo", "Pago Móvil", "Punto de Venta", "Zelle", "
 const PAYMENT_METHOD_ALL = [...PAYMENT_METHODS, "Pagos Múltiples"];
 const BS_METHODS = ["Efectivo", "Pago Móvil", "Punto de Venta"];
 const currencySymbolFor = (metodo) => (BS_METHODS.includes(metodo) ? "Bs." : "$");
-const CATEGORIES = ["SIM Card", "eSIM", "Accesorio", "Teléfono"];
+const CATEGORIES = ["SIM Card", "eSIM", "Accesorio", "Teléfono", "Repuestos"];
 const CREDIT_PLATFORMS = ["Crédito propio", "Cashea", "Chollo"];
 const PLATFORM_COMMISSION_DEFAULT = { Cashea: 4, Chollo: 5 };
 
@@ -572,6 +572,7 @@ export default function App() {
     ordenesCompra: [],
     cierresCaja: [],
     gastosGenerales: [],
+    saldosIniciales: {},
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -623,7 +624,8 @@ export default function App() {
         const ordenesCompra = parsed.ordenesCompra || [];
         const cierresCaja = parsed.cierresCaja || [];
         const gastosGenerales = parsed.gastosGenerales || [];
-        setData((d) => ({ ...d, ...parsed, planes, tasaInterna, tasaBCV, compras, ordenesCompra, cierresCaja, gastosGenerales }));
+        const saldosIniciales = parsed.saldosIniciales || {};
+        setData((d) => ({ ...d, ...parsed, planes, tasaInterna, tasaBCV, compras, ordenesCompra, cierresCaja, gastosGenerales, saldosIniciales }));
       } else {
         setData((d) => ({ ...d, planes: DEFAULT_PLANES }));
       }
@@ -733,7 +735,7 @@ export default function App() {
 
   const walletBalances = useMemo(() => {
     const balances = {};
-    WALLET_ACCOUNTS.forEach((a) => (balances[a] = 0));
+    WALLET_ACCOUNTS.forEach((a) => (balances[a] = Number((data.saldosIniciales || {})[a]) || 0));
 
     // Money in: every sale's collected payments (Línea Nueva, Accesorios, Teléfono Contado,
     // Cambio/Recuperación, and the inicial of Teléfono Crédito).
@@ -774,7 +776,7 @@ export default function App() {
     });
 
     return balances;
-  }, [data.sales, data.credits, data.compras, data.ordenesCompra, data.gastosGenerales]);
+  }, [data.sales, data.credits, data.compras, data.ordenesCompra, data.gastosGenerales, data.saldosIniciales]);
 
   const PIE_COLORS = ["#0A5FBF", "#4FB6E8", "#063E80", "#F59E0B", "#16A34A", "#DC2626", "#042A57"];
 
@@ -973,7 +975,7 @@ export default function App() {
         {tab === "pagar" && <CuentasPorPagar data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "creditos" && <Creditos data={data} setData={setData} money={money} />}
         {tab === "gastos" && <GastosView data={data} setData={setData} money={money} gastosPorConcepto={gastosPorConcepto} PIE_COLORS={PIE_COLORS} walletBalances={walletBalances} />}
-        {tab === "billetera" && <Billetera data={data} walletBalances={walletBalances} />}
+        {tab === "billetera" && <Billetera data={data} setData={setData} walletBalances={walletBalances} />}
       </main>
     </div>
   );
@@ -3387,8 +3389,29 @@ function getMovimientosCuenta(data, account) {
   return movs.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
 }
 
-function Billetera({ data, walletBalances }) {
+function Billetera({ data, setData, walletBalances }) {
   const [cuentaSeleccionada, setCuentaSeleccionada] = useState(null);
+  const [editingSaldos, setEditingSaldos] = useState(false);
+  const [saldosForm, setSaldosForm] = useState({});
+
+  const abrirEdicionSaldos = () => {
+    const initial = {};
+    WALLET_ACCOUNTS.forEach((acc) => {
+      const actual = (data.saldosIniciales || {})[acc];
+      initial[acc] = actual != null ? String(actual) : "";
+    });
+    setSaldosForm(initial);
+    setEditingSaldos(true);
+  };
+
+  const guardarSaldosIniciales = () => {
+    const nuevos = {};
+    WALLET_ACCOUNTS.forEach((acc) => {
+      nuevos[acc] = Number(saldosForm[acc]) || 0;
+    });
+    setData((d) => ({ ...d, saldosIniciales: nuevos }));
+    setEditingSaldos(false);
+  };
 
   const totalUSD = WALLET_ACCOUNTS.reduce((s, acc) => {
     const bal = walletBalances[acc] || 0;
@@ -3455,6 +3478,52 @@ function Billetera({ data, walletBalances }) {
           value={`$${totalUSD.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           sub={`≈ Bs. ${totalBs.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · tasa interna`}
         />
+      </div>
+
+      <div className="panel">
+        <div className="panel-title" style={{ justifyContent: "space-between", display: "flex", alignItems: "center" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Wallet size={16} /> Saldo inicial por cuenta
+          </span>
+          {!editingSaldos && (
+            <button className="btn btn-ghost btn-sm" onClick={abrirEdicionSaldos}>
+              <Plus size={13} /> Configurar saldo inicial
+            </button>
+          )}
+        </div>
+        {!editingSaldos ? (
+          <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
+            Usa esto una sola vez, al empezar a usar el sistema, para cargar el efectivo/saldo que ya tenías en cada cuenta
+            antes de registrar ventas. Los saldos que ves en las tarjetas de abajo ya incluyen este monto inicial más todos
+            los movimientos posteriores.
+          </div>
+        ) : (
+          <div>
+            <div className="form-grid">
+              {WALLET_ACCOUNTS.map((acc) => (
+                <div className="field" key={acc}>
+                  <label>
+                    {acc} <span style={{ color: "var(--color-primary)" }}>({ACCOUNT_CURRENCY[acc] === "USD" ? "$" : "Bs."})</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={saldosForm[acc] ?? ""}
+                    onChange={(e) => setSaldosForm((f) => ({ ...f, [acc]: e.target.value }))}
+                    placeholder="0.00"
+                  />
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-primary" onClick={guardarSaldosIniciales}>
+                <Check size={14} /> Guardar saldos iniciales
+              </button>
+              <button className="btn btn-ghost" onClick={() => setEditingSaldos(false)}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="stat-grid">
