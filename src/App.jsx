@@ -39,7 +39,7 @@ import { supabase, supabaseConfigured, loadRemoteData, saveRemoteData } from "./
 
 const STORAGE_KEY = "movistar-negocio-data";
 
-const PAYMENT_METHODS = ["Efectivo", "Pago Móvil", "Punto de Venta", "Zelle", "Binance", "$ Físico"];
+const PAYMENT_METHODS = ["Efectivo", "Pago Móvil", "Punto de Venta", "Zelle", "Binance", "$ Físico", "Cashea"];
 const PAYMENT_METHOD_ALL = [...PAYMENT_METHODS, "Pagos Múltiples"];
 const BS_METHODS = ["Efectivo", "Pago Móvil", "Punto de Venta"];
 const currencySymbolFor = (metodo) => (BS_METHODS.includes(metodo) ? "Bs." : "$");
@@ -54,6 +54,7 @@ const METHOD_TO_ACCOUNT = {
   Efectivo: "Efectivo",
   "$ Físico": "$ Efectivo",
   Binance: "Binance",
+  Cashea: "Cashea",
 };
 const WALLET_ACCOUNTS = ["Cuenta Bancaria", "Punto de Venta", "Efectivo", "Zelle", "Binance", "$ Efectivo", "Cashea", "Chollo"];
 const ACCOUNT_CURRENCY = {
@@ -3686,8 +3687,9 @@ function Billetera({ data, setData, walletBalances }) {
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.7 }}>
           <strong>Suma (+)</strong> cada vez que factures una venta cobrada con ese método: Pago Móvil → Cuenta Bancaria,
-          Punto de Venta, Zelle, Efectivo, Binance y $ Físico → $ Efectivo. <strong>Cashea/Chollo</strong> suman cuando marcas
-          una cuota como pagada en Créditos (ya con su comisión descontada). <strong>Resta (−)</strong> cada gasto adicional
+          Punto de Venta, Zelle, Efectivo, Binance, $ Físico → $ Efectivo, y Cashea (como método de pago directo en cualquier
+          venta) → Cashea. <strong>Chollo</strong>, y Cashea cuando es el financiamiento de un teléfono a crédito, suman
+          cuando marcas una cuota como pagada en Créditos (ya con su comisión descontada). <strong>Resta (−)</strong> cada gasto adicional
           que registres en una venta de Línea Nueva o Cambio de línea, y cada compra o reposición de inventario, según el
           método de pago que hayas seleccionado en cada una.
         </div>
