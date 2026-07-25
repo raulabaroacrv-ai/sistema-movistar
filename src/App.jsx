@@ -1415,6 +1415,7 @@ function Ventas({ data, setData, money }) {
   };
 
   // ---------- Facturar todo el carrito junto ----------
+  const ventasHistorial = data.sales.filter((s) => s.tipo !== "Financiamiento Cashea");
   const totalCarrito = carritoFactura.reduce((s, it) => s + it.montoCliente, 0);
   const pagosFactura = buildPagos(pagoFactura);
   const esCasheaFactura = pagoFactura.medioPago === "Cashea";
