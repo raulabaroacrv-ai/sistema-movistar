@@ -46,6 +46,9 @@ const currencySymbolFor = (metodo) => (BS_METHODS.includes(metodo) ? "Bs." : "$"
 const CATEGORIES = ["SIM Card", "eSIM", "Accesorio", "Teléfono", "Repuestos"];
 const CREDIT_PLATFORMS = ["Crédito propio", "Cashea", "Chollo"];
 const PLATFORM_COMMISSION_DEFAULT = { Cashea: 4, Chollo: 5 };
+// Cashea permite financiar cualquier producto (línea nueva, cambio de línea, accesorios, repuestos),
+// no solo teléfonos. Cuando se usa así, cobra una comisión fija del 7% sobre lo financiado.
+const CASHEA_GENERAL_COMISION_PCT = 7;
 
 const METHOD_TO_ACCOUNT = {
   "Pago Móvil": "Cuenta Bancaria",
@@ -737,7 +740,9 @@ export default function App() {
 
   const chartData = useMemo(() => {
     const byMonth = {};
-    data.sales.forEach((s) => {
+    data.sales
+      .filter((s) => s.tipo !== "Financiamiento Cashea")
+      .forEach((s) => {
       const key = s.fecha ? s.fecha.slice(0, 7) : "s/f";
       if (!byMonth[key]) byMonth[key] = { mes: key, ventas: 0, ganancia: 0 };
       byMonth[key].ventas += 1;
@@ -781,9 +786,15 @@ export default function App() {
     });
 
     // Money in: Cashea/Chollo pay out the financed amount (net of their commission) about a
-    // week after the sale, once you mark it as received — not at the moment you sell it.
+    // week after the sale, once you mark it as received — not at the moment you sell it. This
+    // applies both to phones financed on credit and to any other product financed through Cashea
+    // directly from the cart (tipo "Financiamiento Cashea").
     data.sales.forEach((s) => {
-      if (s.tipo === "Teléfono Crédito" && (s.plataforma === "Cashea" || s.plataforma === "Chollo") && s.liquidado) {
+      if (
+        (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") &&
+        (s.plataforma === "Cashea" || s.plataforma === "Chollo") &&
+        s.liquidado
+      ) {
         balances[s.plataforma] += Number(s.montoFinanciadoNeto) || 0;
       }
     });
@@ -1406,10 +1417,16 @@ function Ventas({ data, setData, money }) {
   // ---------- Facturar todo el carrito junto ----------
   const totalCarrito = carritoFactura.reduce((s, it) => s + it.montoCliente, 0);
   const pagosFactura = buildPagos(pagoFactura);
+  const esCasheaFactura = pagoFactura.medioPago === "Cashea";
   const cobradoFactura = pagosNativeTotal(pagosFactura, data.currency, data.tasaBCV);
   const cobradoFacturaReal = pagosNativeTotal(pagosFactura, data.currency, data.tasaInterna);
+  // Con Cashea, lo que se escribe en "monto cobrado" es la inicial que paga el cliente — el resto
+  // lo financia Cashea (menos su comisión fija), así que la factura se puede cerrar sin cobrar el 100%.
+  const inicialCashea = esCasheaFactura ? Math.min(cobradoFactura, totalCarrito) : 0;
+  const financiadoCashea = esCasheaFactura ? Math.max(0, totalCarrito - inicialCashea) : 0;
+  const montoFinanciadoNetoCashea = Number((financiadoCashea * (1 - CASHEA_GENERAL_COMISION_PCT / 100)).toFixed(2));
   const diffFactura = totalCarrito - cobradoFactura;
-  const facturaCompleta = carritoFactura.length > 0 && diffFactura <= 0.01;
+  const facturaCompleta = carritoFactura.length > 0 && (esCasheaFactura ? cobradoFactura <= totalCarrito + 0.01 : diffFactura <= 0.01);
 
   const facturarCarrito = () => {
     if (!cliente.nombre.trim() || !facturaCompleta) return;
@@ -1499,6 +1516,25 @@ function Ventas({ data, setData, money }) {
       });
       accesorioItems.forEach((it) => {
         products = decrementStock(products, it.payload.productId, it.payload.cantidad);
+      });
+    }
+
+    if (esCasheaFactura && financiadoCashea > 0.01) {
+      nuevasVentas.push({
+        id: uid(),
+        fecha: todayISO(),
+        facturaGrupoId: grupoId,
+        tipo: "Financiamiento Cashea",
+        clienteNombre: cliente.nombre,
+        clienteCedula: cliente.cedula,
+        clienteTelefono: cliente.telefono,
+        montoFinanciado: financiadoCashea,
+        comisionPct: CASHEA_GENERAL_COMISION_PCT,
+        montoFinanciadoNeto: montoFinanciadoNetoCashea,
+        plataforma: "Cashea",
+        liquidado: false,
+        fechaLiquidacion: null,
+        ganancia: 0,
       });
     }
 
@@ -1950,46 +1986,82 @@ function Ventas({ data, setData, money }) {
           <label style={{ fontSize: 11, fontWeight: 700, color: "var(--color-text-muted)", marginTop: 10, display: "block" }}>
             Pago del cliente por toda la factura
           </label>
-          <PaymentSection value={pagoFactura} onChange={setPagoFactura} />
+          <PaymentSection value={pagoFactura} onChange={setPagoFactura} label={esCasheaFactura ? "Inicial que paga el cliente" : "Monto cobrado"} />
 
-          <div className="receipt-box">
-            <div className="receipt-row">
-              <span>Total de la factura (a tasa BCV)</span>
-              <span style={{ fontWeight: 800 }}>{money(totalCarrito)}</span>
-            </div>
-            <div className="receipt-row">
-              <span>Cobrado (a tasa BCV)</span>
-              <span style={{ fontWeight: 800 }}>{money(cobradoFactura)}</span>
-            </div>
-            <div className="receipt-row receipt-muted">
-              <span>Valor real de lo cobrado (tasa interna)</span>
-              <span>{money(cobradoFacturaReal)}</span>
-            </div>
-            <div className="receipt-divider" />
-            {facturaCompleta && diffFactura < -0.01 ? (
-              <div className="receipt-status success">Vuelto a entregar: {formatBothCurrencies(-diffFactura, data.currency, data.tasaBCV)}</div>
-            ) : facturaCompleta ? (
-              <div className="receipt-status success">Cobro completo ✓</div>
-            ) : (
-              <div className="receipt-status danger">
-                Falta por cobrar: {money(diffFactura)}
-                <div style={{ fontSize: 11, fontWeight: 700 }}>
-                  Pide Bs. {convertNativeToBs(diffFactura, data.currency, data.tasaBCV).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (tasa BCV — así se factura)
-                </div>
-                <div style={{ fontSize: 10.5, fontWeight: 500 }}>
-                  Esos Bs. equivalen a ${pagoToUSD(convertNativeToBs(diffFactura, data.currency, data.tasaBCV), "Efectivo", data.tasaInterna).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reales a tasa interna
-                </div>
+          {esCasheaFactura ? (
+            <div className="receipt-box">
+              <div className="receipt-row">
+                <span>Total de la factura (a tasa BCV)</span>
+                <span style={{ fontWeight: 800 }}>{money(totalCarrito)}</span>
               </div>
-            )}
-            <button
-              className="btn btn-primary"
-              style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
-              disabled={!facturaCompleta || !cliente.nombre.trim()}
-              onClick={facturarCarrito}
-            >
-              <Check size={14} /> Facturar todo
-            </button>
-          </div>
+              <div className="receipt-row">
+                <span>Inicial que paga el cliente</span>
+                <span style={{ fontWeight: 800 }}>{money(inicialCashea)}</span>
+              </div>
+              <div className="receipt-divider" />
+              <div className="receipt-row">
+                <span>Cashea financia</span>
+                <span style={{ fontWeight: 800 }}>{money(financiadoCashea)}</span>
+              </div>
+              <div className="receipt-row receipt-muted">
+                <span>Comisión Cashea ({CASHEA_GENERAL_COMISION_PCT}%)</span>
+                <span>− {money(financiadoCashea - montoFinanciadoNetoCashea)}</span>
+              </div>
+              <div className="receipt-row">
+                <span>Cashea te acreditará (neto)</span>
+                <span style={{ fontWeight: 800, color: "var(--color-success)" }}>{money(montoFinanciadoNetoCashea)}</span>
+              </div>
+              <div className="receipt-divider" />
+              <div className="receipt-status success">Cobro completo ✓ — el resto queda pendiente de Cashea (revisa Créditos)</div>
+              <button
+                className="btn btn-primary"
+                style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+                disabled={!facturaCompleta || !cliente.nombre.trim()}
+                onClick={facturarCarrito}
+              >
+                <Check size={14} /> Facturar todo
+              </button>
+            </div>
+          ) : (
+            <div className="receipt-box">
+              <div className="receipt-row">
+                <span>Total de la factura (a tasa BCV)</span>
+                <span style={{ fontWeight: 800 }}>{money(totalCarrito)}</span>
+              </div>
+              <div className="receipt-row">
+                <span>Cobrado (a tasa BCV)</span>
+                <span style={{ fontWeight: 800 }}>{money(cobradoFactura)}</span>
+              </div>
+              <div className="receipt-row receipt-muted">
+                <span>Valor real de lo cobrado (tasa interna)</span>
+                <span>{money(cobradoFacturaReal)}</span>
+              </div>
+              <div className="receipt-divider" />
+              {facturaCompleta && diffFactura < -0.01 ? (
+                <div className="receipt-status success">Vuelto a entregar: {formatBothCurrencies(-diffFactura, data.currency, data.tasaBCV)}</div>
+              ) : facturaCompleta ? (
+                <div className="receipt-status success">Cobro completo ✓</div>
+              ) : (
+                <div className="receipt-status danger">
+                  Falta por cobrar: {money(diffFactura)}
+                  <div style={{ fontSize: 11, fontWeight: 700 }}>
+                    Pide Bs. {convertNativeToBs(diffFactura, data.currency, data.tasaBCV).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (tasa BCV — así se factura)
+                  </div>
+                  <div style={{ fontSize: 10.5, fontWeight: 500 }}>
+                    Esos Bs. equivalen a ${pagoToUSD(convertNativeToBs(diffFactura, data.currency, data.tasaBCV), "Efectivo", data.tasaInterna).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reales a tasa interna
+                  </div>
+                </div>
+              )}
+              <button
+                className="btn btn-primary"
+                style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+                disabled={!facturaCompleta || !cliente.nombre.trim()}
+                onClick={facturarCarrito}
+              >
+                <Check size={14} /> Facturar todo
+              </button>
+            </div>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={finalizarFactura} style={{ marginTop: 8 }}>
             Vaciar carrito / nuevo cliente
           </button>
@@ -2000,10 +2072,10 @@ function Ventas({ data, setData, money }) {
 
       <div className="panel">
         <div className="panel-title" style={{ cursor: "pointer" }} onClick={() => setHistory((h) => !h)}>
-          <ShoppingCart size={16} /> Historial de ventas ({data.sales.length}) {history ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+          <ShoppingCart size={16} /> Historial de ventas ({ventasHistorial.length}) {history ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
         </div>
         {history &&
-          (data.sales.length === 0 ? (
+          (ventasHistorial.length === 0 ? (
             <div className="empty-state">Aún no has facturado ninguna venta.</div>
           ) : (
             <table>
@@ -2016,7 +2088,7 @@ function Ventas({ data, setData, money }) {
                 </tr>
               </thead>
               <tbody>
-                {data.sales.map((s) => (
+                {ventasHistorial.map((s) => (
                   <tr key={s.id}>
                     <td>{fmtDate(s.fecha)}</td>
                     <td>{s.clienteNombre}</td>
@@ -2038,7 +2110,7 @@ function Ventas({ data, setData, money }) {
 function Caja({ data, setData, money }) {
   const [fecha, setFecha] = useState(todayISO());
 
-  const ventasDelDia = data.sales.filter((s) => s.fecha === fecha);
+  const ventasDelDia = data.sales.filter((s) => s.fecha === fecha && s.tipo !== "Financiamiento Cashea");
   const cierreExistente = data.cierresCaja.find((c) => c.fecha === fecha);
 
   const montoDeVenta = (s) => pagosNativeTotal(s.pagos || [], data.currency, data.tasaInterna);
@@ -3151,12 +3223,16 @@ function Creditos({ data, setData, money }) {
     setData((d) => ({
       ...d,
       sales: d.sales.map((s) =>
-        s.tipo === "Teléfono Crédito" && s.plataforma === plataforma && !s.liquidado ? { ...s, liquidado: true, fechaLiquidacion: todayISO() } : s
+        (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === plataforma && !s.liquidado
+          ? { ...s, liquidado: true, fechaLiquidacion: todayISO() }
+          : s
       ),
     }));
   };
 
-  const ventasCredito = data.sales.filter((s) => s.tipo === "Teléfono Crédito" && s.plataforma && s.plataforma !== "Crédito propio");
+  const ventasCredito = data.sales.filter(
+    (s) => (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma && s.plataforma !== "Crédito propio"
+  );
   const porPlataforma = {};
   ventasCredito.forEach((s) => {
     if (!porPlataforma[s.plataforma]) porPlataforma[s.plataforma] = { pendiente: 0, recibido: 0 };
@@ -3177,9 +3253,10 @@ function Creditos({ data, setData, money }) {
         <Smartphone size={16} /> Créditos ({data.credits.length})
       </div>
       <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginBottom: 12 }}>
-        Los créditos se crean automáticamente al facturar una venta de teléfono a crédito en la pestaña Ventas. Cashea y
-        Chollo suelen pagarte el monto financiado (neto de su comisión) alrededor de una semana después de la venta — hasta
-        que lo marques como recibido, se muestra como acumulado pendiente y no entra a tu Billetera.
+        Los créditos se crean automáticamente al facturar una venta de teléfono a crédito, o cualquier factura pagada con
+        Cashea (línea nueva, cambio de línea, accesorios o repuestos), en la pestaña Ventas. Cashea y Chollo suelen pagarte
+        el monto financiado (neto de su comisión) alrededor de una semana después de la venta — hasta que lo marques como
+        recibido, se muestra como acumulado pendiente y no entra a tu Billetera.
       </div>
       {Object.keys(porPlataforma).length > 0 && (
         <div className="stat-grid" style={{ marginBottom: 16 }}>
@@ -3204,7 +3281,7 @@ function Creditos({ data, setData, money }) {
               {ventas.map((s) => (
                 <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "4px 0" }}>
                   <span>
-                    {fmtDate(s.fecha)} · {s.nombre} ({s.clienteNombre})
+                    {fmtDate(s.fecha)} · {s.nombre || "Financiamiento de factura"} ({s.clienteNombre})
                   </span>
                   <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <strong>{money(s.montoFinanciadoNeto)}</strong>
@@ -3499,10 +3576,10 @@ function getMovimientosCuenta(data, account) {
 
   if (account === "Cashea" || account === "Chollo") {
     data.sales.forEach((s) => {
-      if (s.tipo === "Teléfono Crédito" && s.plataforma === account && s.liquidado) {
+      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === account && s.liquidado) {
         movs.push({
           fecha: s.fechaLiquidacion || s.fecha,
-          descripcion: `Pago recibido · financiamiento ${s.nombre} (${s.clienteNombre})`,
+          descripcion: `Pago recibido · financiamiento ${s.nombre || "de factura"} (${s.clienteNombre})`,
           monto: Number(s.montoFinanciadoNeto) || 0,
         });
       }
