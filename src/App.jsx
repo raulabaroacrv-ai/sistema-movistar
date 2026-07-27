@@ -1522,7 +1522,11 @@ function Ventas({ data, setData, money }) {
     const sim = simProductActual;
     const costoSim = sim ? Number(sim.costo) || 0 : 0;
     const comisionNum = Number(comision) || 0;
-    const monto = convertAmountCurrency(montoRecarga, montoRecargaMoneda, data.currency, data.tasaInterna);
+    // La recarga es un monto de paso (lo que se le cobra al cliente para la recarga, sin margen),
+    // así que debe convertirse a la misma tasa (BCV) que se usa para comparar contra lo cobrado —
+    // si se usara la tasa interna, el mismo monto en Bs. no cuadraría con "Monto cobrado" y
+    // aparecería un vuelto o un faltante que en realidad no existe.
+    const monto = convertAmountCurrency(montoRecarga, montoRecargaMoneda, data.currency, data.tasaBCV);
     setCarritoFactura((its) => [
       ...its,
       {
