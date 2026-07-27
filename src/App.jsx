@@ -23,6 +23,8 @@ import {
   Calculator,
   Cloud,
   CloudOff,
+  Lock,
+  LogOut,
 } from "lucide-react";
 import {
   BarChart,
@@ -578,6 +580,148 @@ function AbonoMultiMetodo({ rows, onChange }) {
   );
 }
 
+function LoginScreen({ onLoggedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (authError) {
+      setError(authError.message === "Invalid login credentials" ? "Correo o clave incorrectos." : authError.message);
+      return;
+    }
+    onLoggedIn(data.session);
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#F3F6FA",
+        fontFamily: "'Inter', system-ui, sans-serif",
+        padding: 16,
+      }}
+    >
+      <form
+        onSubmit={handleSubmit}
+        style={{
+          background: "white",
+          borderRadius: 14,
+          padding: "32px 30px",
+          width: 340,
+          maxWidth: "100%",
+          boxShadow: "0 4px 18px rgba(0,0,0,0.08)",
+          border: "1px solid #E2E8F0",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+          <div
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 9,
+              background: "#4FB6E8",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#042A57",
+              fontWeight: 800,
+              fontFamily: "'Manrope', sans-serif",
+            }}
+          >
+            M
+          </div>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 15, color: "#042A57" }}>Punto Movistar</div>
+            <div style={{ fontSize: 11, color: "#64748B" }}>Control de negocio</div>
+          </div>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            marginTop: 18,
+            marginBottom: 14,
+            color: "#64748B",
+            fontSize: 12.5,
+            fontWeight: 700,
+          }}
+        >
+          <Lock size={14} /> Inicia sesión para continuar
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748B", marginBottom: 4 }}>Correo</label>
+          <input
+            type="email"
+            required
+            autoFocus
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="tu@correo.com"
+            style={{ width: "100%", padding: "9px 10px", borderRadius: 7, border: "1px solid #E2E8F0", fontSize: 13, fontFamily: "inherit" }}
+          />
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748B", marginBottom: 4 }}>Clave</label>
+          <input
+            type="password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••"
+            style={{ width: "100%", padding: "9px 10px", borderRadius: 7, border: "1px solid #E2E8F0", fontSize: 13, fontFamily: "inherit" }}
+          />
+        </div>
+        {error && (
+          <div
+            style={{
+              background: "#FBE9E9",
+              color: "#DC2626",
+              fontSize: 12,
+              fontWeight: 700,
+              borderRadius: 7,
+              padding: "8px 10px",
+              marginBottom: 12,
+            }}
+          >
+            {error}
+          </div>
+        )}
+        <button
+          type="submit"
+          disabled={loading}
+          style={{
+            width: "100%",
+            justifyContent: "center",
+            padding: "10px 16px",
+            borderRadius: 8,
+            border: "none",
+            background: loading ? "#E2E8F0" : "#0A5FBF",
+            color: loading ? "#64748B" : "white",
+            fontWeight: 700,
+            fontSize: 13,
+            cursor: loading ? "not-allowed" : "pointer",
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          {loading ? "Ingresando…" : "Iniciar sesión"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
   const [data, setData] = useState({
     currency: "USD",
@@ -600,6 +744,21 @@ export default function App() {
   const [dataSync, setDataSync] = useState({ status: supabaseConfigured ? "loading" : "local-only", lastSaved: null, error: null });
   const remoteUpdatedAtRef = useRef(null);
   const money = useCurrency(data.currency);
+
+  // ---------- auth gate: require a logged-in Supabase user before showing/loading any data ----------
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(!supabaseConfigured);
+  useEffect(() => {
+    if (!supabaseConfigured) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthChecked(true);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
 
   const syncTasaBCV = async () => {
     setBcvSync((s) => ({ ...s, status: "loading" }));
@@ -825,6 +984,17 @@ export default function App() {
 
   const PIE_COLORS = ["#0A5FBF", "#4FB6E8", "#063E80", "#F59E0B", "#16A34A", "#DC2626", "#042A57"];
 
+  if (supabaseConfigured && !authChecked) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748B", fontFamily: "'Inter', system-ui, sans-serif" }}>
+        Cargando…
+      </div>
+    );
+  }
+  if (supabaseConfigured && !session) {
+    return <LoginScreen onLoggedIn={setSession} />;
+  }
+
   return (
     <div
       className="app-root"
@@ -965,6 +1135,17 @@ export default function App() {
             {item.label}
           </button>
         ))}
+        {supabaseConfigured && session && (
+          <button
+            className="nav-item"
+            style={{ marginTop: "auto" }}
+            onClick={() => supabase.auth.signOut()}
+            title={session.user && session.user.email}
+          >
+            <LogOut size={16} />
+            Cerrar sesión
+          </button>
+        )}
       </aside>
 
       <main className="main">
@@ -986,6 +1167,9 @@ export default function App() {
             }
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {session && session.user && (
+              <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>{session.user.email}</span>
+            )}
             <SyncStatus dataSync={dataSync} />
             <div className="currency-toggle">
               <button className={data.currency === "USD" ? "active" : ""} onClick={() => setData((d) => ({ ...d, currency: "USD" }))}>
