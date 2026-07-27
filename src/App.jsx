@@ -1433,6 +1433,8 @@ function Ventas({ data, setData, money }) {
   const [history, setHistory] = useState(false);
   const [carritoFactura, setCarritoFactura] = useState([]);
   const [pagoFactura, setPagoFactura] = useState(paymentDefault());
+  const [descuento, setDescuento] = useState("");
+  const [descuentoMoneda, setDescuentoMoneda] = useState(data.currency);
 
   // Línea nueva
   const [planId, setPlanId] = useState("");
@@ -1503,6 +1505,8 @@ function Ventas({ data, setData, money }) {
     setCliente({ nombre: "", cedula: "", telefono: "" });
     setCarritoFactura([]);
     setPagoFactura(paymentDefault());
+    setDescuento("");
+    setDescuentoMoneda(data.currency);
     setStep("cliente");
     resetFormularioItem();
   };
@@ -1604,7 +1608,12 @@ function Ventas({ data, setData, money }) {
 
   // ---------- Facturar todo el carrito junto ----------
   const ventasHistorial = data.sales.filter((s) => s.tipo !== "Financiamiento Cashea");
-  const totalCarrito = carritoFactura.reduce((s, it) => s + it.montoCliente, 0);
+  const totalCarritoBruto = carritoFactura.reduce((s, it) => s + it.montoCliente, 0);
+  // Descuento manual por si toca negociar el precio con el cliente — se resta del total antes
+  // de comparar contra lo cobrado, y luego se reparte proporcionalmente entre los ítems para
+  // que la ganancia registrada de cada uno refleje lo que realmente se le rebajó al cliente.
+  const descuentoValor = Math.min(totalCarritoBruto, Math.max(0, convertAmountCurrency(descuento, descuentoMoneda, data.currency, data.tasaBCV)));
+  const totalCarrito = totalCarritoBruto - descuentoValor;
   const pagosFactura = buildPagos(pagoFactura);
   const esCasheaFactura = pagoFactura.medioPago === "Cashea";
   const cobradoFactura = pagosNativeTotal(pagosFactura, data.currency, data.tasaBCV);
@@ -1620,7 +1629,18 @@ function Ventas({ data, setData, money }) {
   const facturarCarrito = () => {
     if (!cliente.nombre.trim() || !facturaCompleta) return;
     const grupoId = uid();
-    const asignaciones = distribuirPagoEntreItems(carritoFactura, pagosFactura, data.currency, data.tasaInterna);
+    // Si hay descuento, el dinero realmente cobrado alcanza para menos que el precio de lista de
+    // cada ítem — se reparte el pago sobre una versión "encogida" del carrito (misma proporción
+    // entre ítems, pero sumando el total ya descontado) para que la asignación por método/cuenta
+    // de pago cuadre con lo que en verdad entró a cada cuenta.
+    const carritoParaPago =
+      descuentoValor > 0.005 && totalCarritoBruto > 0
+        ? carritoFactura.map((it) => ({ ...it, montoCliente: (it.montoCliente / totalCarritoBruto) * totalCarrito }))
+        : carritoFactura;
+    const asignaciones = distribuirPagoEntreItems(carritoParaPago, pagosFactura, data.currency, data.tasaInterna);
+    // Cuánto del descuento total le toca absorber a cada ítem, en proporción a lo que representaba
+    // del total de la factura antes de descontar — se resta de su ganancia registrada.
+    const descuentoDeItem = (it) => (totalCarritoBruto > 0 ? (it.montoCliente / totalCarritoBruto) * descuentoValor : 0);
 
     const nuevasVentas = [];
     let products = data.products;
@@ -1646,7 +1666,7 @@ function Ventas({ data, setData, money }) {
           costoSim: it.payload.costoSim,
           montoRecarga: it.payload.montoRecarga,
           pagos,
-          ganancia: it.payload.comision - it.payload.costoSim,
+          ganancia: it.payload.comision - it.payload.costoSim - descuentoDeItem(it),
         });
         if (it.payload.simProductId) products = decrementStock(products, it.payload.simProductId, 1);
       } else if (it.tipo === "Cambio/Recuperación de Línea") {
@@ -1664,7 +1684,7 @@ function Ventas({ data, setData, money }) {
           costoSim: it.payload.costoSim,
           precioServicio: it.payload.precioServicio,
           pagos,
-          ganancia: it.payload.precioServicio - it.payload.costoSim,
+          ganancia: it.payload.precioServicio - it.payload.costoSim - descuentoDeItem(it),
         });
         if (it.payload.simProductId) products = decrementStock(products, it.payload.simProductId, 1);
       } else if (it.tipo === "Teléfono Contado") {
@@ -1681,7 +1701,7 @@ function Ventas({ data, setData, money }) {
           costo: it.payload.costo,
           precioVenta: it.payload.precioVenta,
           pagos,
-          ganancia: it.payload.precioVenta - it.payload.costo,
+          ganancia: it.payload.precioVenta - it.payload.costo - descuentoDeItem(it),
         });
         products = decrementStock(products, it.payload.productId, 1);
       }
@@ -1690,7 +1710,10 @@ function Ventas({ data, setData, money }) {
     if (accesorioItems.length > 0) {
       const pagosAccesorios = accesorioItems.flatMap((it) => asignaciones[it.key] || []);
       const items = accesorioItems.map((it) => it.payload);
-      const ganancia = accesorioItems.reduce((s, it) => s + (it.payload.precioUnit - it.payload.costoUnit) * it.payload.cantidad, 0);
+      const ganancia = accesorioItems.reduce(
+        (s, it) => s + (it.payload.precioUnit - it.payload.costoUnit) * it.payload.cantidad - descuentoDeItem(it),
+        0
+      );
       nuevasVentas.push({
         id: uid(),
         fecha: todayISO(),
@@ -2172,6 +2195,24 @@ function Ventas({ data, setData, money }) {
             </div>
           ))}
 
+          <div className="field" style={{ marginTop: 10, maxWidth: 260 }}>
+            <label>Descuento (opcional)</label>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="number"
+                value={descuento}
+                onChange={(e) => setDescuento(e.target.value)}
+                placeholder="0.00"
+              />
+              <MonedaToggle value={descuentoMoneda} onChange={setDescuentoMoneda} />
+            </div>
+            {descuentoValor > 0.005 && (
+              <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginTop: 4 }}>
+                Se descuenta {money(descuentoValor)} del total — nuevo total {money(totalCarrito)}
+              </div>
+            )}
+          </div>
+
           <label style={{ fontSize: 11, fontWeight: 700, color: "var(--color-text-muted)", marginTop: 10, display: "block" }}>
             Pago del cliente por toda la factura
           </label>
@@ -2179,6 +2220,18 @@ function Ventas({ data, setData, money }) {
 
           {esCasheaFactura ? (
             <div className="receipt-box">
+              {descuentoValor > 0.005 && (
+                <>
+                  <div className="receipt-row receipt-muted">
+                    <span>Subtotal</span>
+                    <span>{money(totalCarritoBruto)}</span>
+                  </div>
+                  <div className="receipt-row receipt-muted">
+                    <span>Descuento</span>
+                    <span>− {money(descuentoValor)}</span>
+                  </div>
+                </>
+              )}
               <div className="receipt-row">
                 <span>Total de la factura (a tasa BCV)</span>
                 <span style={{ fontWeight: 800 }}>{money(totalCarrito)}</span>
@@ -2213,6 +2266,18 @@ function Ventas({ data, setData, money }) {
             </div>
           ) : (
             <div className="receipt-box">
+              {descuentoValor > 0.005 && (
+                <>
+                  <div className="receipt-row receipt-muted">
+                    <span>Subtotal</span>
+                    <span>{money(totalCarritoBruto)}</span>
+                  </div>
+                  <div className="receipt-row receipt-muted">
+                    <span>Descuento</span>
+                    <span>− {money(descuentoValor)}</span>
+                  </div>
+                </>
+              )}
               <div className="receipt-row">
                 <span>Total de la factura (a tasa BCV)</span>
                 <span style={{ fontWeight: 800 }}>{money(totalCarrito)}</span>
