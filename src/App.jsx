@@ -61,7 +61,7 @@ const METHOD_TO_ACCOUNT = {
   Binance: "Binance",
   Cashea: "Cashea",
 };
-const WALLET_ACCOUNTS = ["Cuenta Bancaria", "Punto de Venta", "Efectivo", "Zelle", "Binance", "$ Efectivo", "Cashea", "Chollo"];
+const WALLET_ACCOUNTS = ["Cuenta Bancaria", "Punto de Venta", "Efectivo", "Zelle", "Binance", "$ Efectivo", "Cashea", "Chollo", "Opercoll"];
 const ACCOUNT_CURRENCY = {
   "Cuenta Bancaria": "VES",
   "Punto de Venta": "VES",
@@ -71,7 +71,12 @@ const ACCOUNT_CURRENCY = {
   "$ Efectivo": "USD",
   Cashea: "USD",
   Chollo: "USD",
+  Opercoll: "VES",
 };
+// Opercoll es la plataforma que se usa para recargar las líneas nuevas. No es un método de pago
+// que el cliente elija — es un saldo prepago que el negocio le transfiere directamente (con un 5%
+// de bono sobre lo transferido), y que se consume automáticamente con cada recarga de Línea Nueva.
+const OPERCOLL_BONO_PCT = 5;
 const fmtAccountAmount = (n, currency) => {
   const val = (Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return currency === "USD" ? `$${val}` : `Bs. ${val}`;
@@ -737,6 +742,7 @@ export default function App() {
     cierresCaja: [],
     gastosGenerales: [],
     saldosIniciales: {},
+    transferenciasOpercoll: [],
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -809,7 +815,20 @@ export default function App() {
         const cierresCaja = parsed.cierresCaja || [];
         const gastosGenerales = parsed.gastosGenerales || [];
         const saldosIniciales = parsed.saldosIniciales || {};
-        setData((d) => ({ ...d, ...parsed, planes, tasaInterna, tasaBCV, compras, ordenesCompra, cierresCaja, gastosGenerales, saldosIniciales }));
+        const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
+        setData((d) => ({
+          ...d,
+          ...parsed,
+          planes,
+          tasaInterna,
+          tasaBCV,
+          compras,
+          ordenesCompra,
+          cierresCaja,
+          gastosGenerales,
+          saldosIniciales,
+          transferenciasOpercoll,
+        }));
       } else {
         setData((d) => ({ ...d, planes: DEFAULT_PLANES }));
       }
@@ -964,6 +983,22 @@ export default function App() {
       if (account) balances[account] -= Number(g.monto) || 0;
     });
 
+    // Opercoll: cada transferencia sale de la cuenta de origen y entra a Opercoll con un 5% de
+    // bono (si transfieres 30.000, Opercoll te acredita 31.500 de saldo para recargar).
+    (data.transferenciasOpercoll || []).forEach((t) => {
+      const origen = METHOD_TO_ACCOUNT[t.metodo];
+      if (origen) balances[origen] -= Number(t.monto) || 0;
+      balances["Opercoll"] += Number(t.montoAcreditado) || 0;
+    });
+
+    // Opercoll se consume automáticamente: cada venta de Línea Nueva descuenta de su saldo el
+    // monto de la recarga (a tasa BCV, la misma con la que se le cobra al cliente).
+    data.sales.forEach((s) => {
+      if (s.tipo === "Línea Nueva") {
+        balances["Opercoll"] -= convertNativeToBs(s.montoRecarga, data.currency, data.tasaBCV);
+      }
+    });
+
     // Money out: inventory purchases (new stock or restocking).
     (data.compras || []).forEach((c) => {
       const account = METHOD_TO_ACCOUNT[c.metodo];
@@ -980,7 +1015,17 @@ export default function App() {
     });
 
     return balances;
-  }, [data.sales, data.credits, data.compras, data.ordenesCompra, data.gastosGenerales, data.saldosIniciales]);
+  }, [
+    data.sales,
+    data.credits,
+    data.compras,
+    data.ordenesCompra,
+    data.gastosGenerales,
+    data.saldosIniciales,
+    data.transferenciasOpercoll,
+    data.currency,
+    data.tasaBCV,
+  ]);
 
   const PIE_COLORS = ["#0A5FBF", "#4FB6E8", "#063E80", "#F59E0B", "#16A34A", "#DC2626", "#042A57"];
 
@@ -1197,7 +1242,7 @@ export default function App() {
           />
         )}
         {tab === "clientes" && <Clientes data={data} setData={setData} money={money} />}
-        {tab === "ventas" && <Ventas data={data} setData={setData} money={money} />}
+        {tab === "ventas" && <Ventas data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "caja" && <Caja data={data} setData={setData} money={money} />}
         {tab === "inventario" && <Inventario data={data} setData={setData} money={money} />}
         {tab === "compras" && <Compras data={data} setData={setData} money={money} walletBalances={walletBalances} />}
@@ -1426,7 +1471,7 @@ function Clientes({ data, setData, money }) {
 }
 
 // ==================== VENTAS / FACTURACIÓN ====================
-function Ventas({ data, setData, money }) {
+function Ventas({ data, setData, money, walletBalances }) {
   const [cliente, setCliente] = useState({ nombre: "", cedula: "", telefono: "" });
   const [step, setStep] = useState("cliente");
   const [tipoVenta, setTipoVenta] = useState(null);
@@ -1959,6 +2004,11 @@ function Ventas({ data, setData, money }) {
                 </div>
               </div>
             </div>
+            {walletBalances && (
+              <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginBottom: 10 }}>
+                Saldo disponible en Opercoll: {fmtAccountAmount(walletBalances["Opercoll"] || 0, "VES")}
+              </div>
+            )}
             <button className="btn btn-ghost btn-sm" onClick={agregarLinea}>
               <Plus size={13} /> Agregar a la factura
             </button>
@@ -3799,6 +3849,7 @@ const ACCOUNT_ICON = {
   Binance: RefreshCw,
   Cashea: Smartphone,
   Chollo: Smartphone,
+  Opercoll: Wifi,
 };
 
 const SALE_TIPO_LABEL = {
@@ -3854,6 +3905,28 @@ function getMovimientosCuenta(data, account) {
     });
   });
 
+  // Opercoll: transferencias que salen de la cuenta de origen, entran a Opercoll con su 5% de
+  // bono, y se consumen automáticamente con cada recarga de Línea Nueva.
+  (data.transferenciasOpercoll || []).forEach((t) => {
+    if (METHOD_TO_ACCOUNT[t.metodo] === account) {
+      movs.push({ fecha: t.fecha, descripcion: "Transferencia a Opercoll", monto: -(Number(t.monto) || 0) });
+    }
+    if (account === "Opercoll") {
+      movs.push({ fecha: t.fecha, descripcion: `Transferencia recibida (+${OPERCOLL_BONO_PCT}% de bono)`, monto: Number(t.montoAcreditado) || 0 });
+    }
+  });
+  if (account === "Opercoll") {
+    data.sales.forEach((s) => {
+      if (s.tipo === "Línea Nueva") {
+        movs.push({
+          fecha: s.fecha,
+          descripcion: `Recarga · Línea nueva (${s.clienteNombre})`,
+          monto: -convertNativeToBs(s.montoRecarga, data.currency, data.tasaBCV),
+        });
+      }
+    });
+  }
+
   return movs.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
 }
 
@@ -3861,6 +3934,27 @@ function Billetera({ data, setData, walletBalances }) {
   const [cuentaSeleccionada, setCuentaSeleccionada] = useState(null);
   const [editingSaldos, setEditingSaldos] = useState(false);
   const [saldosForm, setSaldosForm] = useState({});
+  const [montoOpercoll, setMontoOpercoll] = useState("");
+  const [metodoOpercoll, setMetodoOpercoll] = useState("Efectivo");
+
+  const cuentaOrigenOpercoll = METHOD_TO_ACCOUNT[metodoOpercoll];
+  const disponibleOpercoll = walletBalances[cuentaOrigenOpercoll] || 0;
+  const montoOpercollNum = Number(montoOpercoll) || 0;
+  const excedeSaldoOpercoll = montoOpercollNum > disponibleOpercoll + 0.01;
+  const montoAcreditadoOpercoll = toNativeCurrency(montoOpercollNum, metodoOpercoll, "VES", data.tasaInterna) * (1 + OPERCOLL_BONO_PCT / 100);
+  const puedeTransferirOpercoll = montoOpercollNum > 0 && !excedeSaldoOpercoll;
+
+  const transferirAOpercoll = () => {
+    if (!puedeTransferirOpercoll) return;
+    setData((d) => ({
+      ...d,
+      transferenciasOpercoll: [
+        { id: uid(), fecha: todayISO(), monto: montoOpercollNum, metodo: metodoOpercoll, montoAcreditado: montoAcreditadoOpercoll },
+        ...(d.transferenciasOpercoll || []),
+      ],
+    }));
+    setMontoOpercoll("");
+  };
 
   const abrirEdicionSaldos = () => {
     const initial = {};
@@ -4014,13 +4108,62 @@ function Billetera({ data, setData, walletBalances }) {
 
       <div className="panel">
         <div className="panel-title">
+          <Wifi size={16} /> Transferir a Opercoll
+        </div>
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 12 }}>
+          Opercoll es la plataforma con la que recargas las líneas nuevas. Transfiere aquí lo que le envíes desde
+          cualquiera de tus cuentas y Opercoll te acredita ese monto + {OPERCOLL_BONO_PCT}% de bono para recargar. Cada
+          venta de Línea Nueva descuenta automáticamente el monto de la recarga del saldo de Opercoll.
+        </div>
+        <div className="form-grid">
+          <div className="field">
+            <label>Monto a transferir ({currencySymbolFor(metodoOpercoll)})</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: "var(--color-text-muted)", minWidth: 20 }}>
+                {currencySymbolFor(metodoOpercoll)}
+              </span>
+              <input type="number" value={montoOpercoll} onChange={(e) => setMontoOpercoll(e.target.value)} placeholder="0.00" />
+            </div>
+          </div>
+          <div className="field">
+            <label>Cuenta de origen</label>
+            <select value={metodoOpercoll} onChange={(e) => setMetodoOpercoll(e.target.value)}>
+              {PAYMENT_METHODS.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 10 }}>
+          Disponible en {cuentaOrigenOpercoll}: {fmtAccountAmount(disponibleOpercoll, ACCOUNT_CURRENCY[cuentaOrigenOpercoll])}
+          {montoOpercollNum > 0 && !excedeSaldoOpercoll && (
+            <> · Opercoll te acreditará {fmtAccountAmount(montoAcreditadoOpercoll, "VES")}</>
+          )}
+        </div>
+        {excedeSaldoOpercoll && (
+          <div style={{ fontSize: 11.5, color: "var(--color-danger)", fontWeight: 700, marginBottom: 10 }}>
+            Saldo insuficiente en {cuentaOrigenOpercoll}: disponible {fmtAccountAmount(disponibleOpercoll, ACCOUNT_CURRENCY[cuentaOrigenOpercoll])}, intentas
+            transferir {fmtAccountAmount(montoOpercollNum, ACCOUNT_CURRENCY[cuentaOrigenOpercoll])}.
+          </div>
+        )}
+        <button className="btn btn-primary" disabled={!puedeTransferirOpercoll} onClick={transferirAOpercoll}>
+          <Check size={14} /> Transferir a Opercoll
+        </button>
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">
           <Wallet size={16} /> Cómo se alimenta cada cuenta
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.7 }}>
           <strong>Suma (+)</strong> cada vez que factures una venta cobrada con ese método: Pago Móvil → Cuenta Bancaria,
           Punto de Venta, Zelle, Efectivo, Binance, $ Físico → $ Efectivo, y Cashea (como método de pago directo en cualquier
           venta) → Cashea. <strong>Chollo</strong>, y Cashea cuando es el financiamiento de un teléfono a crédito, suman
-          cuando marcas una cuota como pagada en Créditos (ya con su comisión descontada). <strong>Resta (−)</strong> cada gasto adicional
+          cuando marcas una cuota como pagada en Créditos (ya con su comisión descontada). <strong>Opercoll</strong> suma
+          con cada transferencia que le hagas (+{OPERCOLL_BONO_PCT}% de bono) y resta automáticamente con cada recarga de
+          Línea Nueva que factures. <strong>Resta (−)</strong> cada gasto adicional
           que registres en una venta de Línea Nueva o Cambio de línea, y cada compra o reposición de inventario, según el
           método de pago que hayas seleccionado en cada una.
         </div>
