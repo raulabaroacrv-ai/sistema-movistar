@@ -26,6 +26,9 @@ import {
   Lock,
   LogOut,
   Trash2,
+  Tag,
+  Share2,
+  Copy,
 } from "lucide-react";
 import {
   BarChart,
@@ -1173,6 +1176,7 @@ export default function App() {
           { id: "ventas", label: "Ventas", icon: ShoppingCart },
           { id: "caja", label: "Caja", icon: Calculator },
           { id: "inventario", label: "Inventario", icon: Boxes },
+          { id: "precios", label: "Lista de Precios", icon: Tag },
           { id: "compras", label: "Órdenes de Compra", icon: ClipboardList },
           { id: "pagar", label: "Cuentas por Pagar", icon: Receipt },
           { id: "creditos", label: "Créditos", icon: Smartphone },
@@ -1207,6 +1211,7 @@ export default function App() {
                 ventas: "Venta / Facturación",
                 caja: "Caja",
                 inventario: "Inventario y productos",
+                precios: "Lista de Precios",
                 compras: "Órdenes de Compra",
                 pagar: "Cuentas por Pagar",
                 creditos: "Créditos activos",
@@ -1249,6 +1254,7 @@ export default function App() {
         {tab === "ventas" && <Ventas data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "caja" && <Caja data={data} setData={setData} money={money} />}
         {tab === "inventario" && <Inventario data={data} setData={setData} money={money} />}
+        {tab === "precios" && <ListaPrecios data={data} />}
         {tab === "compras" && <Compras data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "pagar" && <CuentasPorPagar data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "creditos" && <Creditos data={data} setData={setData} money={money} />}
@@ -2780,6 +2786,116 @@ function Caja({ data, setData, money }) {
             </tbody>
           </table>
         </div>
+      )}
+    </>
+  );
+}
+
+// ==================== LISTA DE PRECIOS ====================
+// Las baterías se separan de "Repuestos" con el mismo criterio (nombre contiene "batería") que se usa
+// para el cobro a tasa interna en Ventas, así el vendedor ve agrupado igual que como se cobra.
+const esBateriaProducto = (p) => p.categoria === "Repuestos" && /bateria|batería/i.test(p.nombre || "");
+
+const PRICE_LIST_GROUPS = [
+  { key: "telefono", label: "Teléfonos", emoji: "📱", match: (p) => p.categoria === "Teléfono" },
+  { key: "bateria", label: "Baterías", emoji: "🔋", match: (p) => esBateriaProducto(p) },
+  { key: "repuesto", label: "Repuestos", emoji: "🔧", match: (p) => p.categoria === "Repuestos" && !esBateriaProducto(p) },
+  { key: "accesorio", label: "Accesorios", emoji: "🎧", match: (p) => p.categoria === "Accesorio" },
+];
+
+function ListaPrecios({ data }) {
+  const [copiado, setCopiado] = useState(false);
+
+  const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtBs = (n) => `Bs. ${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const grupos = PRICE_LIST_GROUPS.map((g) => ({
+    ...g,
+    productos: data.products.filter(g.match).slice().sort((a, b) => a.nombre.localeCompare(b.nombre)),
+  })).filter((g) => g.productos.length > 0);
+
+  const construirTexto = () => {
+    const lineas = [];
+    lineas.push("*LISTA DE PRECIOS — PUNTO MOVISTAR*");
+    lineas.push(`Tasa interna: ${data.tasaInterna} · Tasa BCV: ${data.tasaBCV}`);
+    lineas.push(`Actualizado: ${fmtDate(todayISO())}`);
+    lineas.push("");
+    grupos.forEach((g) => {
+      lineas.push(`${g.emoji} *${g.label.toUpperCase()}*`);
+      g.productos.forEach((p) => {
+        lineas.push(`• ${p.nombre}: ${fmtUSD(p.precioVenta)}  |  ${fmtBs(p.precioVenta * data.tasaInterna)} (interna)  |  ${fmtBs(p.precioVenta * data.tasaBCV)} (BCV)`);
+      });
+      lineas.push("");
+    });
+    return lineas.join("\n").trim();
+  };
+
+  const compartirWhatsApp = () => {
+    window.open(`https://wa.me/?text=${encodeURIComponent(construirTexto())}`, "_blank");
+  };
+
+  const copiarTexto = async () => {
+    try {
+      await navigator.clipboard.writeText(construirTexto());
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2000);
+    } catch {
+      // El portapapeles puede fallar por permisos del navegador; no rompemos la vista si pasa.
+    }
+  };
+
+  return (
+    <>
+      <div className="panel" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)", maxWidth: 480 }}>
+          Se arma sola desde tu Inventario: Teléfonos, Baterías, Repuestos y Accesorios, con su precio en $ y su equivalente en
+          Bs. a tasa interna y a tasa BCV.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-primary" onClick={compartirWhatsApp}>
+            <Share2 size={14} /> Compartir por WhatsApp
+          </button>
+          <button className="btn" onClick={copiarTexto}>
+            <Copy size={14} /> {copiado ? "¡Copiado!" : "Copiar lista"}
+          </button>
+        </div>
+      </div>
+
+      {grupos.length === 0 ? (
+        <div className="panel">
+          <div className="empty-state">Aún no tienes productos de Teléfonos, Baterías, Repuestos o Accesorios en tu Inventario.</div>
+        </div>
+      ) : (
+        grupos.map((g) => (
+          <div className="panel" key={g.key}>
+            <div className="panel-title">
+              <Tag size={16} />
+              {g.emoji} {g.label} ({g.productos.length})
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th>Precio $</th>
+                  <th>Bs. (tasa interna)</th>
+                  <th>Bs. (tasa BCV)</th>
+                  <th>Stock</th>
+                </tr>
+              </thead>
+              <tbody>
+                {g.productos.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.nombre}</td>
+                    <td style={{ fontWeight: 700 }}>{fmtUSD(p.precioVenta)}</td>
+                    <td>{fmtBs(p.precioVenta * data.tasaInterna)}</td>
+                    <td>{fmtBs(p.precioVenta * data.tasaBCV)}</td>
+                    <td>{Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock}</Badge> : <Badge tone="neutral">{p.stock}</Badge>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))
       )}
     </>
   );
