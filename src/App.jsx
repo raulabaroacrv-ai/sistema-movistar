@@ -1599,6 +1599,7 @@ function Ventas({ data, setData, money, walletBalances }) {
   const [descuento, setDescuento] = useState("");
   const [descuentoMoneda, setDescuentoMoneda] = useState(data.currency);
   const [reciboFactura, setReciboFactura] = useState(null);
+  const [confirmarEliminarId, setConfirmarEliminarId] = useState(null);
 
   // Línea nueva
   const [planId, setPlanId] = useState("");
@@ -2064,8 +2065,7 @@ function Ventas({ data, setData, money, walletBalances }) {
   // ganancia y el consumo de cuentas (Opercoll, etc.) se recalculan solos porque se derivan de
   // data.sales en cada render — no hay que revertirlos a mano.
   const eliminarVenta = (sale) => {
-    const confirmado = window.confirm(`¿Eliminar esta venta?\n\nCliente: ${sale.clienteNombre}\nTipo: ${sale.tipo}\nFecha: ${fmtDate(sale.fecha)}\nGanancia: ${money(sale.ganancia)}\n\nEsta acción no se puede deshacer.`);
-    if (!confirmado) return;
+    setConfirmarEliminarId(null);
     setData((d) => {
       let products = d.products;
       if ((sale.tipo === "Línea Nueva" || sale.tipo === "Cambio/Recuperación de Línea") && sale.simProductId) {
@@ -2619,13 +2619,31 @@ function Ventas({ data, setData, money, walletBalances }) {
                     </td>
                     <td style={{ fontWeight: 700, color: s.ganancia >= 0 ? "var(--color-success)" : "var(--color-danger)" }}>{money(s.ganancia)}</td>
                     <td>
-                      <button
-                        onClick={() => eliminarVenta(s)}
-                        title="Eliminar venta"
-                        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-danger)", padding: 4, display: "flex" }}
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                      {confirmarEliminarId === s.id ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+                          <span style={{ fontSize: 11, color: "var(--color-danger)", fontWeight: 700 }}>¿Eliminar?</span>
+                          <button
+                            onClick={() => eliminarVenta(s)}
+                            style={{ background: "var(--color-danger)", color: "#fff", border: "none", borderRadius: 6, padding: "3px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                          >
+                            Sí
+                          </button>
+                          <button
+                            onClick={() => setConfirmarEliminarId(null)}
+                            style={{ background: "none", border: "1px solid var(--color-border)", borderRadius: 6, padding: "3px 8px", fontSize: 11, cursor: "pointer" }}
+                          >
+                            No
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmarEliminarId(s.id)}
+                          title="Eliminar venta"
+                          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-danger)", padding: 4, display: "flex" }}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
