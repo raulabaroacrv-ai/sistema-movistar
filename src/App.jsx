@@ -25,6 +25,7 @@ import {
   CloudOff,
   Lock,
   LogOut,
+  Trash2,
 } from "lucide-react";
 import {
   BarChart,
@@ -2057,6 +2058,35 @@ function Ventas({ data, setData, money, walletBalances }) {
     resetFormularioItem();
   };
 
+  // ---------- Eliminar una venta del historial (para corregir errores y rehacerla) ----------
+  // Revierte lo que esa venta afectó: devuelve el stock del producto/SIM que se descontó, y si
+  // era un teléfono a crédito, también elimina su cronograma de cuotas asociado. La comisión,
+  // ganancia y el consumo de cuentas (Opercoll, etc.) se recalculan solos porque se derivan de
+  // data.sales en cada render — no hay que revertirlos a mano.
+  const eliminarVenta = (sale) => {
+    const confirmado = window.confirm(`¿Eliminar esta venta?\n\nCliente: ${sale.clienteNombre}\nTipo: ${sale.tipo}\nFecha: ${fmtDate(sale.fecha)}\nGanancia: ${money(sale.ganancia)}\n\nEsta acción no se puede deshacer.`);
+    if (!confirmado) return;
+    setData((d) => {
+      let products = d.products;
+      if ((sale.tipo === "Línea Nueva" || sale.tipo === "Cambio/Recuperación de Línea") && sale.simProductId) {
+        products = products.map((p) => (p.id === sale.simProductId ? { ...p, stock: Number(p.stock) + 1 } : p));
+      } else if (sale.tipo === "Teléfono Contado" || sale.tipo === "Teléfono Crédito") {
+        products = products.map((p) => (p.id === sale.productId ? { ...p, stock: Number(p.stock) + 1 } : p));
+      } else if (sale.tipo === "Accesorios") {
+        (sale.items || []).forEach((it) => {
+          products = products.map((p) => (p.id === it.productId ? { ...p, stock: Number(p.stock) + (Number(it.cantidad) || 0) } : p));
+        });
+      }
+      const credits = sale.tipo === "Teléfono Crédito" ? d.credits.filter((c) => c.id !== sale.creditId) : d.credits;
+      return {
+        ...d,
+        sales: d.sales.filter((s) => s.id !== sale.id),
+        products,
+        credits,
+      };
+    });
+  };
+
   if (reciboFactura) {
     return <ReciboFacturaView recibo={reciboFactura} data={data} money={money} onCerrar={() => setReciboFactura(null)} />;
   }
@@ -2576,6 +2606,7 @@ function Ventas({ data, setData, money, walletBalances }) {
                   <th>Cliente</th>
                   <th>Tipo</th>
                   <th>Ganancia</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -2587,6 +2618,15 @@ function Ventas({ data, setData, money, walletBalances }) {
                       <Badge tone="neutral">{s.tipo}</Badge>
                     </td>
                     <td style={{ fontWeight: 700, color: s.ganancia >= 0 ? "var(--color-success)" : "var(--color-danger)" }}>{money(s.ganancia)}</td>
+                    <td>
+                      <button
+                        onClick={() => eliminarVenta(s)}
+                        title="Eliminar venta"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-danger)", padding: 4, display: "flex" }}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
