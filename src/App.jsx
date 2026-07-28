@@ -1779,7 +1779,18 @@ function Ventas({ data, setData, money, walletBalances }) {
   const totalCarrito = totalCarritoBruto - descuentoValor;
   const pagosFactura = buildPagos(pagoFactura);
   const esCasheaFactura = pagoFactura.medioPago === "Cashea";
-  const cobradoFactura = pagosNativeTotal(pagosFactura, data.currency, data.tasaBCV);
+  // Las baterías (dentro de Repuestos/Accesorios) se cobran a tasa interna, no a tasa BCV como el
+  // resto de la factura. Si el carrito mezcla baterías con otros ítems, el pago en Bs. se reparte
+  // proporcionalmente entre ambas tasas según qué fracción de la factura son baterías.
+  const esItemBateria = (it) => it.tipo === "Accesorios" && /bateria|batería/i.test((it.payload && it.payload.nombre) || "");
+  const totalCarritoBaterias = carritoFactura.filter(esItemBateria).reduce((s, it) => s + it.montoCliente, 0);
+  const bateriaShareFactura = totalCarritoBruto > 0 ? totalCarritoBaterias / totalCarritoBruto : 0;
+  const pagosFacturaBsMonto = pagosFactura.filter((p) => BS_METHODS.includes(p.metodo)).reduce((s, p) => s + (Number(p.monto) || 0), 0);
+  const pagosFacturaUsdMonto = pagosFactura.filter((p) => !BS_METHODS.includes(p.metodo)).reduce((s, p) => s + (Number(p.monto) || 0), 0);
+  const cobradoFactura =
+    pagosFacturaUsdMonto +
+    (pagosFacturaBsMonto * bateriaShareFactura) / (Number(data.tasaInterna) || 1) +
+    (pagosFacturaBsMonto * (1 - bateriaShareFactura)) / (Number(data.tasaBCV) || 1);
   const cobradoFacturaReal = pagosNativeTotal(pagosFactura, data.currency, data.tasaInterna);
   // Con Cashea, lo que se escribe en "monto cobrado" es la inicial que paga el cliente — el resto
   // lo financia Cashea (menos su comisión fija), así que la factura se puede cerrar sin cobrar el 100%.
@@ -1787,6 +1798,8 @@ function Ventas({ data, setData, money, walletBalances }) {
   const financiadoCashea = esCasheaFactura ? Math.max(0, totalCarrito - inicialCashea) : 0;
   const montoFinanciadoNetoCashea = Number((financiadoCashea * (1 - CASHEA_GENERAL_COMISION_PCT / 100)).toFixed(2));
   const diffFactura = totalCarrito - cobradoFactura;
+  // Bs. que faltan por cobrar, usando la misma mezcla de tasas (interna para la parte de baterías).
+  const diffFacturaBs = diffFactura * bateriaShareFactura * (Number(data.tasaInterna) || 1) + diffFactura * (1 - bateriaShareFactura) * (Number(data.tasaBCV) || 1);
   const facturaCompleta = carritoFactura.length > 0 && (esCasheaFactura ? cobradoFactura <= totalCarrito + 0.01 : diffFactura <= 0.01);
 
   const facturarCarrito = () => {
@@ -2499,9 +2512,15 @@ function Ventas({ data, setData, money, walletBalances }) {
                 <span style={{ fontWeight: 800 }}>{money(totalCarrito)}</span>
               </div>
               <div className="receipt-row">
-                <span>Cobrado (a tasa BCV)</span>
+                <span>Cobrado{bateriaShareFactura > 0 ? "" : " (a tasa BCV)"}</span>
                 <span style={{ fontWeight: 800 }}>{money(cobradoFactura)}</span>
               </div>
+              {bateriaShareFactura > 0 && (
+                <div className="receipt-row receipt-muted">
+                  <span>↳ baterías cobradas a tasa interna</span>
+                  <span>{Math.round(bateriaShareFactura * 100)}% de la factura</span>
+                </div>
+              )}
               <div className="receipt-row receipt-muted">
                 <span>Valor real de lo cobrado (tasa interna)</span>
                 <span>{money(cobradoFacturaReal)}</span>
@@ -2515,11 +2534,13 @@ function Ventas({ data, setData, money, walletBalances }) {
                 <div className="receipt-status danger">
                   Falta por cobrar: {money(diffFactura)}
                   <div style={{ fontSize: 11, fontWeight: 700 }}>
-                    Pide Bs. {convertNativeToBs(diffFactura, data.currency, data.tasaBCV).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (tasa BCV — así se factura)
+                    Pide Bs. {diffFacturaBs.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {bateriaShareFactura > 0 ? "(incluye baterías a tasa interna)" : "(tasa BCV — así se factura)"}
                   </div>
-                  <div style={{ fontSize: 10.5, fontWeight: 500 }}>
-                    Esos Bs. equivalen a ${pagoToUSD(convertNativeToBs(diffFactura, data.currency, data.tasaBCV), "Efectivo", data.tasaInterna).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reales a tasa interna
-                  </div>
+                  {bateriaShareFactura === 0 && (
+                    <div style={{ fontSize: 10.5, fontWeight: 500 }}>
+                      Esos Bs. equivalen a ${pagoToUSD(convertNativeToBs(diffFactura, data.currency, data.tasaBCV), "Efectivo", data.tasaInterna).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reales a tasa interna
+                    </div>
+                  )}
                 </div>
               )}
               <button
