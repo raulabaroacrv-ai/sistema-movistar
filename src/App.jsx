@@ -2834,14 +2834,26 @@ function ListaPrecios({ data }) {
     window.open(`https://wa.me/?text=${encodeURIComponent(construirTexto())}`, "_blank");
   };
 
-  const copiarTexto = async () => {
+  // Se usa execCommand (en vez de solo navigator.clipboard.writeText, que en algunos navegadores
+  // depende de un permiso async que puede quedar pendiente) porque es síncrono y funciona sin
+  // pedir permiso, copiando desde un textarea temporal invisible.
+  const copiarTexto = () => {
+    const texto = construirTexto();
+    const ta = document.createElement("textarea");
+    ta.value = texto;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
     try {
-      await navigator.clipboard.writeText(construirTexto());
-      setCopiado(true);
-      setTimeout(() => setCopiado(false), 2000);
+      document.execCommand("copy");
     } catch {
-      // El portapapeles puede fallar por permisos del navegador; no rompemos la vista si pasa.
+      // Si el navegador tampoco soporta execCommand, al menos no rompemos la vista.
     }
+    document.body.removeChild(ta);
+    setCopiado(true);
+    setTimeout(() => setCopiado(false), 2000);
   };
 
   return (
