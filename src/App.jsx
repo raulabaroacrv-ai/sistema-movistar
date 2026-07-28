@@ -743,6 +743,7 @@ export default function App() {
     gastosGenerales: [],
     saldosIniciales: {},
     transferenciasOpercoll: [],
+    ultimoNumeroFactura: 0,
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -816,6 +817,7 @@ export default function App() {
         const gastosGenerales = parsed.gastosGenerales || [];
         const saldosIniciales = parsed.saldosIniciales || {};
         const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
+        const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
         setData((d) => ({
           ...d,
           ...parsed,
@@ -828,6 +830,7 @@ export default function App() {
           gastosGenerales,
           saldosIniciales,
           transferenciasOpercoll,
+          ultimoNumeroFactura,
         }));
       } else {
         setData((d) => ({ ...d, planes: DEFAULT_PLANES }));
@@ -1470,6 +1473,120 @@ function Clientes({ data, setData, money }) {
   );
 }
 
+// Recibo numerado que se muestra justo después de facturar (carrito o teléfono a crédito),
+// con los datos del cliente, lo que se llevó y cómo quedó pagado.
+function ReciboFacturaView({ recibo, data, money, onCerrar }) {
+  const r = recibo;
+  return (
+    <div className="panel" style={{ maxWidth: 520 }}>
+      <div className="panel-title" style={{ justifyContent: "space-between", display: "flex", alignItems: "center" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Receipt size={16} /> Factura N° {r.numero}
+        </span>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--color-text-muted)" }}>{fmtDate(r.fecha)}</span>
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 14 }}>{r.cliente.nombre}</div>
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
+          {r.cliente.cedula ? `Cédula: ${r.cliente.cedula}` : "Sin cédula"} {r.cliente.telefono ? `· Tel: ${r.cliente.telefono}` : ""}
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 4, fontSize: 11, fontWeight: 700, color: "var(--color-text-muted)" }}>Se lleva</div>
+      {r.items.map((it, i) => (
+        <div className="cart-row" key={i}>
+          <span style={{ flex: 1 }}>{it.descripcion}</span>
+          <span style={{ fontWeight: 700 }}>{money(it.monto)}</span>
+        </div>
+      ))}
+
+      <div className="receipt-box" style={{ marginTop: 12 }}>
+        {r.descuento > 0.005 && (
+          <>
+            <div className="receipt-row receipt-muted">
+              <span>Subtotal</span>
+              <span>{money(r.totalBruto)}</span>
+            </div>
+            <div className="receipt-row receipt-muted">
+              <span>Descuento</span>
+              <span>− {money(r.descuento)}</span>
+            </div>
+          </>
+        )}
+        <div className="receipt-row">
+          <span>Total</span>
+          <span style={{ fontWeight: 800 }}>{money(r.total)}</span>
+        </div>
+
+        {r.pagos.length > 0 && (
+          <>
+            <div className="receipt-divider" />
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--color-text-muted)", marginBottom: 4 }}>
+              {r.esCredito ? "Inicial pagada con" : "Pagado con"}
+            </div>
+            {r.pagos.map((p, i) => (
+              <div className="receipt-row" key={i}>
+                <span>{p.metodo}</span>
+                <span style={{ fontWeight: 700 }}>{fmtAccountAmount(p.monto, ACCOUNT_CURRENCY[METHOD_TO_ACCOUNT[p.metodo]])}</span>
+              </div>
+            ))}
+          </>
+        )}
+
+        {r.esCashea && (
+          <>
+            <div className="receipt-divider" />
+            <div className="receipt-row">
+              <span>Inicial que pagó el cliente</span>
+              <span style={{ fontWeight: 800 }}>{money(r.inicialCashea)}</span>
+            </div>
+            <div className="receipt-row">
+              <span>Cashea financia</span>
+              <span style={{ fontWeight: 800 }}>{money(r.financiadoCashea)}</span>
+            </div>
+            <div className="receipt-row receipt-muted">
+              <span>Comisión Cashea ({CASHEA_GENERAL_COMISION_PCT}%)</span>
+              <span>− {money(r.financiadoCashea - r.montoFinanciadoNetoCashea)}</span>
+            </div>
+            <div className="receipt-row">
+              <span>Cashea te acreditará (neto)</span>
+              <span style={{ fontWeight: 800, color: "var(--color-success)" }}>{money(r.montoFinanciadoNetoCashea)}</span>
+            </div>
+          </>
+        )}
+
+        {r.esCredito && (
+          <>
+            <div className="receipt-divider" />
+            <div className="receipt-row">
+              <span>Financiado ({r.plataformaCredito})</span>
+              <span style={{ fontWeight: 800 }}>{money(r.total - r.cobrado)}</span>
+            </div>
+            <div className="receipt-row">
+              <span>Cuotas</span>
+              <span style={{ fontWeight: 800 }}>
+                {r.numeroCuotas} de {money(r.montoCuota)}
+              </span>
+            </div>
+          </>
+        )}
+
+        {!r.esCashea && !r.esCredito && r.cobrado - r.total > 0.01 && (
+          <>
+            <div className="receipt-divider" />
+            <div className="receipt-status success">Vuelto a entregar: {money(r.cobrado - r.total)}</div>
+          </>
+        )}
+      </div>
+
+      <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 14 }} onClick={onCerrar}>
+        <Check size={14} /> Nueva venta
+      </button>
+    </div>
+  );
+}
+
 // ==================== VENTAS / FACTURACIÓN ====================
 function Ventas({ data, setData, money, walletBalances }) {
   const [cliente, setCliente] = useState({ nombre: "", cedula: "", telefono: "" });
@@ -1480,6 +1597,7 @@ function Ventas({ data, setData, money, walletBalances }) {
   const [pagoFactura, setPagoFactura] = useState(paymentDefault());
   const [descuento, setDescuento] = useState("");
   const [descuentoMoneda, setDescuentoMoneda] = useState(data.currency);
+  const [reciboFactura, setReciboFactura] = useState(null);
 
   // Línea nueva
   const [planId, setPlanId] = useState("");
@@ -1795,15 +1913,38 @@ function Ventas({ data, setData, money, walletBalances }) {
       });
     }
 
+    const numeroFactura = (data.ultimoNumeroFactura || 0) + 1;
+    const nuevasVentasNumeradas = nuevasVentas.map((v) => ({ ...v, numeroFactura }));
+
     setData((d) => ({
       ...d,
-      sales: [...nuevasVentas, ...d.sales],
+      sales: [...nuevasVentasNumeradas, ...d.sales],
       clients: upsertClient(d.clients, cliente),
       products,
+      ultimoNumeroFactura: numeroFactura,
     }));
+
+    setReciboFactura({
+      numero: numeroFactura,
+      fecha: todayISO(),
+      cliente: { ...cliente },
+      items: carritoFactura.map((it) => ({ descripcion: it.descripcion || it.tipo, monto: it.montoCliente })),
+      pagos: pagosFactura,
+      totalBruto: totalCarritoBruto,
+      descuento: descuentoValor,
+      total: totalCarrito,
+      cobrado: cobradoFactura,
+      esCashea: esCasheaFactura,
+      inicialCashea,
+      financiadoCashea,
+      montoFinanciadoNetoCashea,
+    });
+
     setCliente({ nombre: "", cedula: "", telefono: "" });
     setCarritoFactura([]);
     setPagoFactura(paymentDefault());
+    setDescuento("");
+    setDescuentoMoneda(data.currency);
     setStep("cliente");
     resetFormularioItem();
   };
@@ -1834,10 +1975,12 @@ function Ventas({ data, setData, money, walletBalances }) {
     const pagos = inicial > 0 ? buildPagos(pagoInicialCredito).map((p) => ({ ...p, fecha: todayISO() })) : [];
     const financiado = precioTotal - inicial;
     const montoFinanciadoNeto = Number((financiado * (1 - comisionPct / 100)).toFixed(2));
+    const numeroFactura = (data.ultimoNumeroFactura || 0) + 1;
     const saleRecord = {
       id: saleId,
       fecha: todayISO(),
       facturaGrupoId: uid(),
+      numeroFactura,
       tipo: "Teléfono Crédito",
       clienteNombre: cliente.nombre,
       clienteCedula: cliente.cedula,
@@ -1876,11 +2019,34 @@ function Ventas({ data, setData, money, walletBalances }) {
       credits: [creditRecord, ...d.credits],
       clients: upsertClient(d.clients, cliente),
       products: decrementStock(d.products, prod.id, 1),
+      ultimoNumeroFactura: numeroFactura,
     }));
+
+    setReciboFactura({
+      numero: numeroFactura,
+      fecha: todayISO(),
+      cliente: { ...cliente },
+      items: [{ descripcion: `Teléfono a crédito · ${prod.nombre}`, monto: precioTotal }],
+      pagos,
+      totalBruto: precioTotal,
+      descuento: 0,
+      total: precioTotal,
+      cobrado: inicial,
+      esCashea: false,
+      esCredito: true,
+      plataformaCredito: creditoPlataforma,
+      numeroCuotas: n,
+      montoCuota,
+    });
+
     setCliente({ nombre: "", cedula: "", telefono: "" });
     setStep("cliente");
     resetFormularioItem();
   };
+
+  if (reciboFactura) {
+    return <ReciboFacturaView recibo={reciboFactura} data={data} money={money} onCerrar={() => setReciboFactura(null)} />;
+  }
 
   return (
     <>
