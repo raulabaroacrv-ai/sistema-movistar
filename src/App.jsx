@@ -374,6 +374,75 @@ function MonedaToggle({ value, onChange }) {
   );
 }
 
+// Select con buscador para elegir un producto de una lista larga escribiendo su nombre, en vez de
+// tener que desplazarse por un <select> nativo viéndolos uno a uno (útil sobre todo con Repuestos,
+// donde puede haber decenas de baterías).
+function BuscadorProducto({ products, value, onChange, placeholder, renderLabel, emptyLabel }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = products.find((p) => p.id === value);
+  const q = query.trim().toLowerCase();
+  const filtered = q ? products.filter((p) => (p.nombre || "").toLowerCase().includes(q)) : products;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={open ? query : selected ? renderLabel(selected) : ""}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          if (value) onChange("");
+        }}
+        onFocus={() => {
+          setQuery("");
+          setOpen(true);
+        }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        autoComplete="off"
+      />
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 20,
+            background: "white",
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+            marginTop: 4,
+            maxHeight: 240,
+            overflowY: "auto",
+            boxShadow: "0 6px 18px rgba(0,0,0,0.12)",
+          }}
+        >
+          {filtered.length === 0 ? (
+            <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--color-text-muted)" }}>{emptyLabel || "Sin resultados"}</div>
+          ) : (
+            filtered.map((p) => (
+              <div
+                key={p.id}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChange(p.id);
+                  setQuery("");
+                  setOpen(false);
+                }}
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 12.5, borderBottom: "1px solid var(--color-border)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-bg)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
+              >
+                {renderLabel(p)}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TasaBadge({ label, value, onSave }) {
   const [editing, setEditing] = useState(false);
   const [input, setInput] = useState(String(value));
@@ -2268,14 +2337,13 @@ function Ventas({ data, setData, money, walletBalances }) {
             <div className="form-grid">
               <div className="field">
                 <label>Producto</label>
-                <select value={accProductId} onChange={(e) => setAccProductId(e.target.value)}>
-                  <option value="">Seleccionar accesorio o repuesto...</option>
-                  {accProducts.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.nombre} · {p.categoria} ({money(p.precioVenta)} · stock {p.stock})
-                    </option>
-                  ))}
-                </select>
+                <BuscadorProducto
+                  products={accProducts}
+                  value={accProductId}
+                  onChange={setAccProductId}
+                  placeholder="Buscar accesorio o repuesto por nombre..."
+                  renderLabel={(p) => `${p.nombre} · ${p.categoria} (${money(p.precioVenta)} · stock ${p.stock})`}
+                />
               </div>
               <div className="field">
                 <label>Cantidad</label>
@@ -2301,14 +2369,13 @@ function Ventas({ data, setData, money, walletBalances }) {
             <div className="form-grid">
               <div className="field">
                 <label>Equipo</label>
-                <select value={telProductId} onChange={(e) => setTelProductId(e.target.value)}>
-                  <option value="">Seleccionar teléfono...</option>
-                  {telProducts.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.nombre} ({money(p.precioVenta)} · stock {p.stock})
-                    </option>
-                  ))}
-                </select>
+                <BuscadorProducto
+                  products={telProducts}
+                  value={telProductId}
+                  onChange={setTelProductId}
+                  placeholder="Buscar teléfono por nombre..."
+                  renderLabel={(p) => `${p.nombre} (${money(p.precioVenta)} · stock ${p.stock})`}
+                />
               </div>
               {telSubTipo === "contado" && (
                 <div className="field">
@@ -2808,6 +2875,10 @@ function ListaPrecios({ data }) {
 
   const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtBs = (n) => `Bs. ${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // El precio "$ a BCV" no es precioVenta*tasaBCV — es cuántos dólares representan, a tasa BCV, los
+  // mismos bolívares que ese producto vale a tasa interna. Como tasa interna > tasa BCV, esos
+  // bolívares valen más dólares al convertirlos con la tasa (más baja) del BCV.
+  const precioBCV = (p) => (Number(p.precioVenta) * (Number(data.tasaInterna) || 0)) / (Number(data.tasaBCV) || 1);
 
   const grupos = PRICE_LIST_GROUPS.map((g) => ({
     ...g,
@@ -2823,7 +2894,7 @@ function ListaPrecios({ data }) {
     grupos.forEach((g) => {
       lineas.push(`${g.emoji} *${g.label.toUpperCase()}*`);
       g.productos.forEach((p) => {
-        lineas.push(`• ${p.nombre}: ${fmtUSD(p.precioVenta)}  |  ${fmtBs(p.precioVenta * data.tasaInterna)} (interna)  |  ${fmtBs(p.precioVenta * data.tasaBCV)} (BCV)`);
+        lineas.push(`• ${p.nombre}: ${fmtUSD(p.precioVenta)}  |  ${fmtBs(p.precioVenta * data.tasaInterna)} (interna)  |  ${fmtUSD(precioBCV(p))} (BCV)`);
       });
       lineas.push("");
     });
@@ -2860,8 +2931,8 @@ function ListaPrecios({ data }) {
     <>
       <div className="panel" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontSize: 12, color: "var(--color-text-muted)", maxWidth: 480 }}>
-          Se arma sola desde tu Inventario: Teléfonos, Baterías, Repuestos y Accesorios, con su precio en $ y su equivalente en
-          Bs. a tasa interna y a tasa BCV.
+          Se arma sola desde tu Inventario: Teléfonos, Baterías, Repuestos y Accesorios, con su precio en $ a tasa interna, su
+          equivalente en Bs. a tasa interna, y lo que esos mismos Bs. representan en $ si se calculan a tasa BCV.
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn btn-primary" onClick={compartirWhatsApp}>
@@ -2890,7 +2961,7 @@ function ListaPrecios({ data }) {
                   <th>Producto</th>
                   <th>Precio $</th>
                   <th>Bs. (tasa interna)</th>
-                  <th>Bs. (tasa BCV)</th>
+                  <th>$ a BCV</th>
                   <th>Stock</th>
                 </tr>
               </thead>
@@ -2900,7 +2971,7 @@ function ListaPrecios({ data }) {
                     <td>{p.nombre}</td>
                     <td style={{ fontWeight: 700 }}>{fmtUSD(p.precioVenta)}</td>
                     <td>{fmtBs(p.precioVenta * data.tasaInterna)}</td>
-                    <td>{fmtBs(p.precioVenta * data.tasaBCV)}</td>
+                    <td>{fmtUSD(precioBCV(p))}</td>
                     <td>{Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock}</Badge> : <Badge tone="neutral">{p.stock}</Badge>}</td>
                   </tr>
                 ))}
