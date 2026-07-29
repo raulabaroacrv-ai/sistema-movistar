@@ -817,6 +817,7 @@ export default function App() {
     saldosIniciales: {},
     transferenciasOpercoll: [],
     ultimoNumeroFactura: 0,
+    opercollRecargaBs: 3300,
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -891,6 +892,7 @@ export default function App() {
         const saldosIniciales = parsed.saldosIniciales || {};
         const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
         const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
+        const opercollRecargaBs = parsed.opercollRecargaBs || 3300;
         setData((d) => ({
           ...d,
           ...parsed,
@@ -904,6 +906,7 @@ export default function App() {
           saldosIniciales,
           transferenciasOpercoll,
           ultimoNumeroFactura,
+          opercollRecargaBs,
         }));
       } else {
         setData((d) => ({ ...d, planes: DEFAULT_PLANES }));
@@ -1067,11 +1070,12 @@ export default function App() {
       balances["Opercoll"] += Number(t.montoAcreditado) || 0;
     });
 
-    // Opercoll se consume automáticamente: cada venta de Línea Nueva descuenta de su saldo el
-    // monto de la recarga (a tasa BCV, la misma con la que se le cobra al cliente).
+    // Opercoll se consume automáticamente: cada venta de Línea Nueva descuenta de su saldo un monto
+    // fijo por recarga (lo que realmente cobra Opercoll por activación), no lo que se le cobra al
+    // cliente — ambos montos pueden diferir.
     data.sales.forEach((s) => {
       if (s.tipo === "Línea Nueva") {
-        balances["Opercoll"] -= convertNativeToBs(s.montoRecarga, data.currency, data.tasaBCV);
+        balances["Opercoll"] -= Number(data.opercollRecargaBs) || 3300;
       }
     });
 
@@ -1101,6 +1105,7 @@ export default function App() {
     data.transferenciasOpercoll,
     data.currency,
     data.tasaBCV,
+    data.opercollRecargaBs,
   ]);
 
   const PIE_COLORS = ["#0A5FBF", "#4FB6E8", "#063E80", "#F59E0B", "#16A34A", "#DC2626", "#042A57"];
@@ -4309,17 +4314,20 @@ const SALE_TIPO_LABEL = {
 function getMovimientosCuenta(data, account) {
   const movs = [];
 
+  // `orden` es la clave de orden real dentro del mismo día: los `id` se generan con Date.now() como
+  // prefijo, así que comparar `orden` como texto respeta el momento exacto en que ocurrió cada
+  // movimiento, no solo la fecha (que por sí sola no distingue el orden dentro de un mismo día).
   data.sales.forEach((s) => {
     (s.pagos || []).forEach((p) => {
       if (METHOD_TO_ACCOUNT[p.metodo] === account) {
-        movs.push({ fecha: s.fecha, descripcion: `Venta · ${SALE_TIPO_LABEL[s.tipo] || s.tipo} (${s.clienteNombre})`, monto: Number(p.monto) || 0 });
+        movs.push({ fecha: s.fecha, orden: s.id, descripcion: `Venta · ${SALE_TIPO_LABEL[s.tipo] || s.tipo} (${s.clienteNombre})`, monto: Number(p.monto) || 0 });
       }
     });
   });
 
   (data.gastosGenerales || []).forEach((g) => {
     if (METHOD_TO_ACCOUNT[g.metodo] === account) {
-      movs.push({ fecha: g.fecha, descripcion: `Gasto · ${g.concepto}`, monto: -(Number(g.monto) || 0) });
+      movs.push({ fecha: g.fecha, orden: g.id, descripcion: `Gasto · ${g.concepto}`, monto: -(Number(g.monto) || 0) });
     }
   });
 
@@ -4328,6 +4336,7 @@ function getMovimientosCuenta(data, account) {
       if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === account && s.liquidado) {
         movs.push({
           fecha: s.fechaLiquidacion || s.fecha,
+          orden: s.id,
           descripcion: `Pago recibido · financiamiento ${s.nombre || "de factura"} (${s.clienteNombre})`,
           monto: Number(s.montoFinanciadoNeto) || 0,
         });
@@ -4337,14 +4346,14 @@ function getMovimientosCuenta(data, account) {
 
   (data.compras || []).forEach((c) => {
     if (METHOD_TO_ACCOUNT[c.metodo] === account) {
-      movs.push({ fecha: c.fecha, descripcion: `Compra inventario · ${c.producto}`, monto: -(Number(c.costoTotal) || 0) });
+      movs.push({ fecha: c.fecha, orden: c.id, descripcion: `Compra inventario · ${c.producto}`, monto: -(Number(c.costoTotal) || 0) });
     }
   });
 
   (data.ordenesCompra || []).forEach((o) => {
     (o.pagos || []).forEach((p) => {
       if (METHOD_TO_ACCOUNT[p.metodo] === account) {
-        movs.push({ fecha: p.fecha || o.fecha, descripcion: `Pago factura ${o.numeroFactura || "s/n"} · ${o.proveedor || "Proveedor"}`, monto: -(Number(p.monto) || 0) });
+        movs.push({ fecha: p.fecha || o.fecha, orden: o.id, descripcion: `Pago factura ${o.numeroFactura || "s/n"} · ${o.proveedor || "Proveedor"}`, monto: -(Number(p.monto) || 0) });
       }
     });
   });
@@ -4353,10 +4362,10 @@ function getMovimientosCuenta(data, account) {
   // bono, y se consumen automáticamente con cada recarga de Línea Nueva.
   (data.transferenciasOpercoll || []).forEach((t) => {
     if (METHOD_TO_ACCOUNT[t.metodo] === account) {
-      movs.push({ fecha: t.fecha, descripcion: "Transferencia a Opercoll", monto: -(Number(t.monto) || 0) });
+      movs.push({ fecha: t.fecha, orden: t.id, descripcion: "Transferencia a Opercoll", monto: -(Number(t.monto) || 0) });
     }
     if (account === "Opercoll") {
-      movs.push({ fecha: t.fecha, descripcion: `Transferencia recibida (+${OPERCOLL_BONO_PCT}% de bono)`, monto: Number(t.montoAcreditado) || 0 });
+      movs.push({ fecha: t.fecha, orden: t.id, descripcion: `Transferencia recibida (+${OPERCOLL_BONO_PCT}% de bono)`, monto: Number(t.montoAcreditado) || 0 });
     }
   });
   if (account === "Opercoll") {
@@ -4364,14 +4373,19 @@ function getMovimientosCuenta(data, account) {
       if (s.tipo === "Línea Nueva") {
         movs.push({
           fecha: s.fecha,
+          orden: s.id,
           descripcion: `Recarga · Línea nueva (${s.clienteNombre})`,
-          monto: -convertNativeToBs(s.montoRecarga, data.currency, data.tasaBCV),
+          monto: -(Number(data.opercollRecargaBs) || 3300),
         });
       }
     });
   }
 
-  return movs.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  return movs.sort((a, b) => {
+    const porFecha = (b.fecha || "").localeCompare(a.fecha || "");
+    if (porFecha !== 0) return porFecha;
+    return (b.orden || "").localeCompare(a.orden || "");
+  });
 }
 
 function Billetera({ data, setData, walletBalances }) {
@@ -4557,7 +4571,11 @@ function Billetera({ data, setData, walletBalances }) {
         <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 12 }}>
           Opercoll es la plataforma con la que recargas las líneas nuevas. Transfiere aquí lo que le envíes desde
           cualquiera de tus cuentas y Opercoll te acredita ese monto + {OPERCOLL_BONO_PCT}% de bono para recargar. Cada
-          venta de Línea Nueva descuenta automáticamente el monto de la recarga del saldo de Opercoll.
+          venta de Línea Nueva descuenta automáticamente de Opercoll el costo fijo de la recarga (haz clic para ajustarlo
+          si cambia).
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <TasaBadge label="Costo fijo por recarga (Bs.)" value={data.opercollRecargaBs} onSave={(v) => setData((d) => ({ ...d, opercollRecargaBs: v }))} />
         </div>
         <div className="form-grid">
           <div className="field">
