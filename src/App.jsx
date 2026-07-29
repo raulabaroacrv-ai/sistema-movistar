@@ -817,7 +817,6 @@ export default function App() {
     saldosIniciales: {},
     transferenciasOpercoll: [],
     ultimoNumeroFactura: 0,
-    opercollRecargaBs: 3300,
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -892,7 +891,6 @@ export default function App() {
         const saldosIniciales = parsed.saldosIniciales || {};
         const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
         const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
-        const opercollRecargaBs = parsed.opercollRecargaBs || 3300;
         setData((d) => ({
           ...d,
           ...parsed,
@@ -906,7 +904,6 @@ export default function App() {
           saldosIniciales,
           transferenciasOpercoll,
           ultimoNumeroFactura,
-          opercollRecargaBs,
         }));
       } else {
         setData((d) => ({ ...d, planes: DEFAULT_PLANES }));
@@ -1070,12 +1067,15 @@ export default function App() {
       balances["Opercoll"] += Number(t.montoAcreditado) || 0;
     });
 
-    // Opercoll se consume automáticamente: cada venta de Línea Nueva descuenta de su saldo un monto
-    // fijo por recarga (lo que realmente cobra Opercoll por activación), no lo que se le cobra al
-    // cliente — ambos montos pueden diferir.
+    // Opercoll se consume automáticamente: cada venta de Línea Nueva descuenta de su saldo
+    // exactamente el mismo monto en Bs. que se cobró por la recarga — ni un centavo distinto.
+    // `montoRecargaBs` guarda ese monto tal cual se cobró, sin volver a convertirlo con la tasa
+    // BCV de hoy (que puede haber cambiado desde la venta y generaría un monto ligeramente
+    // distinto al que realmente se cobró). Las ventas viejas que no tengan ese campo (de antes de
+    // este arreglo) usan el cálculo anterior como respaldo.
     data.sales.forEach((s) => {
       if (s.tipo === "Línea Nueva") {
-        balances["Opercoll"] -= Number(data.opercollRecargaBs) || 3300;
+        balances["Opercoll"] -= s.montoRecargaBs != null ? Number(s.montoRecargaBs) : convertNativeToBs(s.montoRecarga, data.currency, data.tasaBCV);
       }
     });
 
@@ -1105,7 +1105,6 @@ export default function App() {
     data.transferenciasOpercoll,
     data.currency,
     data.tasaBCV,
-    data.opercollRecargaBs,
   ]);
 
   const PIE_COLORS = ["#0A5FBF", "#4FB6E8", "#063E80", "#F59E0B", "#16A34A", "#DC2626", "#042A57"];
@@ -1776,6 +1775,11 @@ function Ventas({ data, setData, money, walletBalances }) {
     // si se usara la tasa interna, el mismo monto en Bs. no cuadraría con "Monto cobrado" y
     // aparecería un vuelto o un faltante que en realidad no existe.
     const monto = convertAmountCurrency(montoRecarga, montoRecargaMoneda, data.currency, data.tasaBCV);
+    // Guardamos también el monto EXACTO en Bs. que se cobró (tal cual se escribió, sin volver a
+    // convertirlo más adelante) para que Opercoll descuente siempre lo mismo que se cobró — si se
+    // recalculara con la tasa BCV vigente en otro momento, un cambio de tasa haría que el
+    // descuento de Opercoll ya no coincidiera con el monto real cobrado.
+    const montoRecargaBs = montoRecargaMoneda === "VES" ? Number(montoRecarga) || 0 : (Number(montoRecarga) || 0) * (Number(data.tasaBCV) || 1);
     setCarritoFactura((its) => [
       ...its,
       {
@@ -1783,7 +1787,16 @@ function Ventas({ data, setData, money, walletBalances }) {
         tipo: "Línea Nueva",
         descripcion: `Línea nueva${plan ? " · " + plan.nombre : ""}`,
         montoCliente: monto,
-        payload: { planNombre: plan ? plan.nombre : "", comision: comisionNum, simCategoria, simProductId: sim ? sim.id : null, simNombre: sim ? sim.nombre : simCategoria, costoSim, montoRecarga: monto },
+        payload: {
+          planNombre: plan ? plan.nombre : "",
+          comision: comisionNum,
+          simCategoria,
+          simProductId: sim ? sim.id : null,
+          simNombre: sim ? sim.nombre : simCategoria,
+          costoSim,
+          montoRecarga: monto,
+          montoRecargaBs,
+        },
       },
     ]);
     setPlanId("");
@@ -1923,6 +1936,7 @@ function Ventas({ data, setData, money, walletBalances }) {
           simNombre: it.payload.simNombre,
           costoSim: it.payload.costoSim,
           montoRecarga: it.payload.montoRecarga,
+          montoRecargaBs: it.payload.montoRecargaBs,
           pagos,
           ganancia: it.payload.comision - it.payload.costoSim - descuentoDeItem(it),
         });
@@ -4371,11 +4385,12 @@ function getMovimientosCuenta(data, account) {
   if (account === "Opercoll") {
     data.sales.forEach((s) => {
       if (s.tipo === "Línea Nueva") {
+        const montoBs = s.montoRecargaBs != null ? Number(s.montoRecargaBs) : convertNativeToBs(s.montoRecarga, data.currency, data.tasaBCV);
         movs.push({
           fecha: s.fecha,
           orden: s.id,
           descripcion: `Recarga · Línea nueva (${s.clienteNombre})`,
-          monto: -(Number(data.opercollRecargaBs) || 3300),
+          monto: -montoBs,
         });
       }
     });
@@ -4571,11 +4586,7 @@ function Billetera({ data, setData, walletBalances }) {
         <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 12 }}>
           Opercoll es la plataforma con la que recargas las líneas nuevas. Transfiere aquí lo que le envíes desde
           cualquiera de tus cuentas y Opercoll te acredita ese monto + {OPERCOLL_BONO_PCT}% de bono para recargar. Cada
-          venta de Línea Nueva descuenta automáticamente de Opercoll el costo fijo de la recarga (haz clic para ajustarlo
-          si cambia).
-        </div>
-        <div style={{ marginBottom: 14 }}>
-          <TasaBadge label="Costo fijo por recarga (Bs.)" value={data.opercollRecargaBs} onSave={(v) => setData((d) => ({ ...d, opercollRecargaBs: v }))} />
+          venta de Línea Nueva descuenta automáticamente de Opercoll el mismo monto en Bs. que se cobró por esa recarga.
         </div>
         <div className="form-grid">
           <div className="field">
