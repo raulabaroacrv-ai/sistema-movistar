@@ -3042,9 +3042,14 @@ function ListaPrecios({ data, setData }) {
   const cholloPct = data.cholloPct != null ? Number(data.cholloPct) : 17;
   const precioChollo = (p) => Number(p.precioVenta) * (1 + cholloPct / 100);
 
+  // Los productos sin stock disponible no se muestran en ninguna de las listas (regular, Cashea, Chollo):
+  // no tiene sentido cotizar algo que no se puede vender ahora mismo.
   const grupos = PRICE_LIST_GROUPS.map((g) => ({
     ...g,
-    productos: data.products.filter(g.match).slice().sort((a, b) => a.nombre.localeCompare(b.nombre)),
+    productos: data.products
+      .filter((p) => g.match(p) && Number(p.stock) > 0)
+      .slice()
+      .sort((a, b) => a.nombre.localeCompare(b.nombre)),
   })).filter((g) => g.productos.length > 0);
 
   const construirTexto = () => {
@@ -3710,6 +3715,7 @@ function Compras({ data, setData, money, walletBalances }) {
   const [nuevoNombre, setNuevoNombre] = useState("");
   const [nuevaCategoria, setNuevaCategoria] = useState(CATEGORIES[0]);
   const [nuevoPrecioVenta, setNuevoPrecioVenta] = useState("");
+  const [precioVentaExistente, setPrecioVentaExistente] = useState("");
   const [cantidad, setCantidad] = useState("");
   const [costoUnitario, setCostoUnitario] = useState("");
   const [items, setItems] = useState([]);
@@ -3719,6 +3725,21 @@ function Compras({ data, setData, money, walletBalances }) {
   const costoNuevoPreview = Number(costoUnitario) || 0;
   const cambioCostoPreview =
     modo === "existente" && prodSeleccionado && costoUnitario !== "" ? costoNuevoPreview - costoAnteriorPreview : null;
+
+  // Precio de venta que quedará vigente para este producto tras la factura, y sus cálculos
+  // en vivo para Cashea y Chollo, para que se vea de una vez cómo queda la Lista de Precios.
+  const precioVentaPreview =
+    modo === "existente"
+      ? precioVentaExistente !== ""
+        ? Number(precioVentaExistente) || 0
+        : prodSeleccionado
+        ? Number(prodSeleccionado.precioVenta) || 0
+        : 0
+      : Number(nuevoPrecioVenta) || 0;
+  const cholloPctPreview = data.cholloPct != null ? Number(data.cholloPct) : 17;
+  const precioBCVPreview = (precioVentaPreview * (Number(data.tasaInterna) || 0)) / (Number(data.tasaBCV) || 1);
+  const precioCasheaPreview = precioBCVPreview * 1.07;
+  const precioChollooPreview = precioVentaPreview * (1 + cholloPctPreview / 100);
 
   const addItem = () => {
     const cant = Number(cantidad);
@@ -3737,6 +3758,7 @@ function Compras({ data, setData, money, walletBalances }) {
           costoUnitario: costo,
           costoAnterior: Number(prodSeleccionado.costo) || 0,
           esNuevo: false,
+          precioVentaNuevo: precioVentaExistente !== "" ? Number(precioVentaExistente) || 0 : Number(prodSeleccionado.precioVenta) || 0,
         },
       ]);
     } else {
@@ -3757,6 +3779,7 @@ function Compras({ data, setData, money, walletBalances }) {
       ]);
     }
     setProductId("");
+    setPrecioVentaExistente("");
     setNuevoNombre("");
     setNuevoPrecioVenta("");
     setCantidad("");
@@ -3786,6 +3809,7 @@ function Compras({ data, setData, money, walletBalances }) {
         costoUnitario: it.costoUnitario,
         costoAnterior: it.costoAnterior,
         esNuevo: it.esNuevo,
+        precioVentaNuevo: it.esNuevo ? it.precioVenta : it.precioVentaNuevo,
       })),
       montoTotal: montoTotalOrden,
       pagos: pagosFactura.map((p) => ({ ...p, fecha: todayISO() })),
@@ -3801,7 +3825,16 @@ function Compras({ data, setData, money, walletBalances }) {
             ...products,
           ];
         } else {
-          products = products.map((p) => (p.id === it.productId ? { ...p, stock: Number(p.stock) + it.cantidad, costo: it.costoUnitario } : p));
+          products = products.map((p) =>
+            p.id === it.productId
+              ? {
+                  ...p,
+                  stock: Number(p.stock) + it.cantidad,
+                  costo: it.costoUnitario,
+                  precioVenta: it.precioVentaNuevo != null ? Number(it.precioVentaNuevo) || 0 : p.precioVenta,
+                }
+              : p
+          );
         }
       });
       return { ...d, products, ordenesCompra: [orden, ...d.ordenesCompra] };
@@ -3849,7 +3882,14 @@ function Compras({ data, setData, money, walletBalances }) {
           <div className="form-grid">
             <div className="field">
               <label>Producto</label>
-              <select value={productId} onChange={(e) => setProductId(e.target.value)}>
+              <select
+                value={productId}
+                onChange={(e) => {
+                  setProductId(e.target.value);
+                  const prod = data.products.find((p) => p.id === e.target.value);
+                  setPrecioVentaExistente(prod ? String(prod.precioVenta) : "");
+                }}
+              >
                 <option value="">Seleccionar producto...</option>
                 {data.products.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -3866,6 +3906,17 @@ function Compras({ data, setData, money, walletBalances }) {
               <label>Costo unitario de esta factura</label>
               <input type="number" value={costoUnitario} onChange={(e) => setCostoUnitario(e.target.value)} placeholder="0.00" />
             </div>
+            {prodSeleccionado && (
+              <div className="field">
+                <label>Precio de venta (Lista de Precios)</label>
+                <input
+                  type="number"
+                  value={precioVentaExistente}
+                  onChange={(e) => setPrecioVentaExistente(e.target.value)}
+                  placeholder="0.00"
+                />
+              </div>
+            )}
           </div>
         ) : (
           <div className="form-grid">
@@ -3907,6 +3958,13 @@ function Compras({ data, setData, money, walletBalances }) {
           </div>
         )}
 
+        {precioVentaPreview > 0 && ((modo === "existente" && prodSeleccionado) || (modo === "nuevo" && nuevoNombre.trim())) && (
+          <div style={{ fontSize: 12, marginBottom: 10, color: "var(--color-text-muted)" }}>
+            Así queda en la Lista de Precios: <strong>${precioVentaPreview.toFixed(2)}</strong> regular · Cashea{" "}
+            <strong>${precioCasheaPreview.toFixed(2)}</strong> · Chollo <strong>${precioChollooPreview.toFixed(2)}</strong>
+          </div>
+        )}
+
         <button className="btn btn-ghost btn-sm" onClick={addItem} style={{ marginBottom: 14 }}>
           <Plus size={13} /> Agregar producto a la factura
         </button>
@@ -3917,6 +3975,10 @@ function Compras({ data, setData, money, walletBalances }) {
               <div className="cart-row" key={it.key}>
                 <span style={{ flex: 1 }}>
                   {it.esNuevo && <Badge tone="primary">Nuevo</Badge>} {it.nombre} · {it.categoria} × {it.cantidad}
+                  {" "}
+                  <span style={{ color: "var(--color-text-muted)", fontSize: 11.5 }}>
+                    (precio venta: ${Number(it.esNuevo ? it.precioVenta : it.precioVentaNuevo).toFixed(2)})
+                  </span>
                 </span>
                 <span style={{ fontWeight: 700 }}>{money(it.cantidad * it.costoUnitario)}</span>
                 <button className="icon-btn" onClick={() => removeItem(it.key)}>
