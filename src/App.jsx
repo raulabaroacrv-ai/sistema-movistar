@@ -172,6 +172,19 @@ const compararPorMarca = (a, b) => {
   return (a.nombre || "").localeCompare(b.nombre || "");
 };
 
+// ---------- Precios por plataforma (Cashea / Chollo) ----------
+// Fuente única de verdad para estos cálculos: se usan tanto en la Lista de Precios como en la
+// venta de Teléfono a Crédito, para que el precio que se factura sea siempre el mismo que se
+// publicó en la lista.
+// El precio "$ a BCV" no es precioVenta*tasaBCV — es cuántos dólares representan, a tasa BCV, los
+// mismos bolívares que ese producto vale a tasa interna. Como tasa interna > tasa BCV, esos
+// bolívares valen más dólares al convertirlos con la tasa (más baja) del BCV.
+const precioBCVProducto = (p, tasaInterna, tasaBCV) => (Number(p.precioVenta) * (Number(tasaInterna) || 0)) / (Number(tasaBCV) || 1);
+// Precio Cashea: precio a BCV + 7%, que es la comisión que cobra Cashea por su servicio de financiamiento.
+const precioCasheaProducto = (p, tasaInterna, tasaBCV) => precioBCVProducto(p, tasaInterna, tasaBCV) * 1.07;
+// Precio Chollo: precio de venta normal en $ + un % ajustable (por defecto 17%).
+const precioCholloProducto = (p, cholloPct) => Number(p.precioVenta) * (1 + (cholloPct != null ? Number(cholloPct) : 17) / 100);
+
 const marginPct = (costo, precio) => {
   const c = Number(costo) || 0;
   const p = Number(precio) || 0;
@@ -1839,6 +1852,16 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
     return data.clients.find((c) => (c.cedula || "").trim().toLowerCase() === norm) || null;
   };
 
+  // Precio total a facturar por un teléfono a crédito según la plataforma: si es Cashea o Chollo,
+  // se toma el precio ya publicado para esa plataforma en la Lista de Precios (no el precio regular),
+  // así lo que se cobra siempre coincide con lo que el cliente ve anunciado.
+  const precioCreditoTelefono = (prod, plataforma) => {
+    if (!prod) return 0;
+    if (plataforma === "Cashea") return precioCasheaProducto(prod, data.tasaInterna, data.tasaBCV);
+    if (plataforma === "Chollo") return precioCholloProducto(prod, data.cholloPct);
+    return Number(prod.precioVenta) || 0;
+  };
+
   const onCedulaBlur = () => {
     const match = cedulaMatch(cliente.cedula);
     if (match && !cliente.nombre) {
@@ -2187,7 +2210,7 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   const submitTelCredito = () => {
     const prod = data.products.find((p) => p.id === telProductId);
     if (!cliente.nombre.trim() || !prod) return;
-    const precioTotal = Number(prod.precioVenta) || 0;
+    const precioTotal = precioCreditoTelefono(prod, creditoPlataforma);
     const costoTelefono = Number(prod.costo) || 0;
     const inicial = Number(creditoInicial) || 0;
     const n = Number(creditoCuotas) || 1;
@@ -2630,8 +2653,16 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                   const prodSeleccionado = data.products.find((p) => p.id === telProductId);
                   const faltaCliente = !cliente.nombre.trim();
                   const faltaEquipo = !prodSeleccionado;
+                  const precioTotalPreview = precioCreditoTelefono(prodSeleccionado, creditoPlataforma);
+                  const financiadoPreview = Math.max(0, precioTotalPreview - inicialNum);
                   return (
                     <div className="receipt-box">
+                      {prodSeleccionado && creditoPlataforma !== "Crédito propio" && (
+                        <div className="receipt-row">
+                          <span>Precio del equipo por {creditoPlataforma} (Lista de Precios)</span>
+                          <span style={{ fontWeight: 800 }}>{money(precioTotalPreview)}</span>
+                        </div>
+                      )}
                       <div className="receipt-row">
                         <span>Inicial a cobrar (a tasa BCV)</span>
                         <span style={{ fontWeight: 800 }}>{money(inicialNum)}</span>
@@ -2644,6 +2675,12 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                         <span>Valor real de lo cobrado (tasa interna)</span>
                         <span>{money(collectedReal)}</span>
                       </div>
+                      {prodSeleccionado && creditoPlataforma !== "Crédito propio" && (
+                        <div className="receipt-row">
+                          <span>Se acumula en cuenta {creditoPlataforma} (precio − inicial)</span>
+                          <span style={{ fontWeight: 800, color: "var(--color-success)" }}>{money(financiadoPreview)}</span>
+                        </div>
+                      )}
                       <div className="receipt-divider" />
                       {inicialNum <= 0 ? (
                         <div className="receipt-status neutral">Sin inicial — se factura sin cobro ahora</div>
@@ -3073,15 +3110,10 @@ function ListaPrecios({ data, setData }) {
 
   const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtBs = (n) => `Bs. ${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  // El precio "$ a BCV" no es precioVenta*tasaBCV — es cuántos dólares representan, a tasa BCV, los
-  // mismos bolívares que ese producto vale a tasa interna. Como tasa interna > tasa BCV, esos
-  // bolívares valen más dólares al convertirlos con la tasa (más baja) del BCV.
-  const precioBCV = (p) => (Number(p.precioVenta) * (Number(data.tasaInterna) || 0)) / (Number(data.tasaBCV) || 1);
-  // Precio Cashea: precio a BCV + 7%, que es la comisión que cobra Cashea por su servicio de financiamiento.
-  const precioCashea = (p) => precioBCV(p) * 1.07;
-  // Precio Chollo: precio de venta normal en $ + un % ajustable (por defecto 17%), exclusivo de esta lista.
   const cholloPct = data.cholloPct != null ? Number(data.cholloPct) : 17;
-  const precioChollo = (p) => Number(p.precioVenta) * (1 + cholloPct / 100);
+  const precioBCV = (p) => precioBCVProducto(p, data.tasaInterna, data.tasaBCV);
+  const precioCashea = (p) => precioCasheaProducto(p, data.tasaInterna, data.tasaBCV);
+  const precioChollo = (p) => precioCholloProducto(p, cholloPct);
 
   // Los productos sin stock disponible no se muestran en ninguna de las listas (regular, Cashea, Chollo):
   // no tiene sentido cotizar algo que no se puede vender ahora mismo.
@@ -3778,9 +3810,9 @@ function Compras({ data, setData, money, walletBalances }) {
         : 0
       : Number(nuevoPrecioVenta) || 0;
   const cholloPctPreview = data.cholloPct != null ? Number(data.cholloPct) : 17;
-  const precioBCVPreview = (precioVentaPreview * (Number(data.tasaInterna) || 0)) / (Number(data.tasaBCV) || 1);
-  const precioCasheaPreview = precioBCVPreview * 1.07;
-  const precioChollooPreview = precioVentaPreview * (1 + cholloPctPreview / 100);
+  const precioBCVPreview = precioBCVProducto({ precioVenta: precioVentaPreview }, data.tasaInterna, data.tasaBCV);
+  const precioCasheaPreview = precioCasheaProducto({ precioVenta: precioVentaPreview }, data.tasaInterna, data.tasaBCV);
+  const precioChollooPreview = precioCholloProducto({ precioVenta: precioVentaPreview }, cholloPctPreview);
 
   const addItem = () => {
     const cant = Number(cantidad);
