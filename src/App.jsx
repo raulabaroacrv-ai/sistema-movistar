@@ -359,9 +359,9 @@ function Badge({ tone = "neutral", children }) {
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
-function Card({ icon: Icon, label, value, sub, tone = "primary" }) {
+function Card({ icon: Icon, label, value, sub, tone = "primary", onClick }) {
   return (
-    <div className="stat-card">
+    <div className="stat-card" onClick={onClick} style={onClick ? { cursor: "pointer" } : undefined}>
       <div className={`stat-icon tone-${tone}`}>
         <Icon size={18} />
       </div>
@@ -450,6 +450,66 @@ function BuscadorProducto({ products, value, onChange, placeholder, renderLabel,
               </div>
             ))
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BuscadorCliente({ clients, value, onChange, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const q = (value || "").trim().toLowerCase();
+  const matches = q.length >= 2 ? clients.filter((c) => (c.nombre || "").toLowerCase().includes(q)).slice(0, 8) : [];
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="Nombre completo"
+        autoComplete="off"
+      />
+      {open && matches.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 20,
+            background: "white",
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+            marginTop: 4,
+            maxHeight: 240,
+            overflowY: "auto",
+            boxShadow: "0 6px 18px rgba(0,0,0,0.12)",
+          }}
+        >
+          {matches.map((c) => (
+            <div
+              key={c.id}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onSelect(c);
+                setOpen(false);
+              }}
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 12.5, borderBottom: "1px solid var(--color-border)" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-bg)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
+            >
+              <div style={{ fontWeight: 700 }}>{c.nombre}</div>
+              <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                {c.cedula || "Sin cédula"}
+                {c.telefono ? ` · ${c.telefono}` : ""}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1334,6 +1394,7 @@ export default function App() {
             PIE_COLORS={PIE_COLORS}
             bcvSync={bcvSync}
             syncTasaBCV={syncTasaBCV}
+            setTab={setTab}
           />
         )}
         {tab === "clientes" && <Clientes data={data} setData={setData} money={money} />}
@@ -1352,7 +1413,7 @@ export default function App() {
 }
 
 // ==================== DASHBOARD ====================
-function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, ingresosPorMetodoPago, PIE_COLORS, bcvSync, syncTasaBCV }) {
+function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, ingresosPorMetodoPago, PIE_COLORS, bcvSync, syncTasaBCV, setTab }) {
   return (
     <>
       <div className="tasa-bar" style={{ alignItems: "center" }}>
@@ -1380,7 +1441,14 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
         <Card icon={Smartphone} tone="primary" label="Ganancia teléfonos de contado" value={money(metrics.gananciaTelContado)} sub={`${metrics.countTelContado} ventas`} />
         <Card icon={CreditCard} tone="primary" label="Créditos activos" value={metrics.countTelCredito} sub={`Por cobrar: ${money(metrics.montoPorCobrar)}`} />
         <Card icon={Wallet} tone="success" label="Ganancia total del negocio" value={money(metrics.gananciaTotal)} sub="Líneas + accesorios + teléfonos de contado" />
-        <Card icon={AlertTriangle} tone={metrics.stockBajo.length ? "warning" : "success"} label="Productos con stock bajo" value={metrics.stockBajo.length} sub={metrics.stockBajo.length ? metrics.stockBajo.map((p) => p.nombre).join(", ") : "Todo en orden"} />
+        <Card
+          icon={AlertTriangle}
+          tone={metrics.stockBajo.length ? "warning" : "success"}
+          label="Productos con stock bajo"
+          value={metrics.stockBajo.length}
+          sub={metrics.stockBajo.length ? "Ver detalle en Inventario →" : "Todo en orden"}
+          onClick={setTab ? () => setTab("inventario") : undefined}
+        />
       </div>
 
       <div className="panel">
@@ -2238,7 +2306,12 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
             </div>
             <div className="field">
               <label>Nombre</label>
-              <input value={cliente.nombre} onChange={(e) => setCliente((c) => ({ ...c, nombre: e.target.value }))} placeholder="Nombre completo" />
+              <BuscadorCliente
+                clients={data.clients}
+                value={cliente.nombre}
+                onChange={(v) => setCliente((c) => ({ ...c, nombre: v }))}
+                onSelect={(c) => setCliente({ nombre: c.nombre, cedula: c.cedula || "", telefono: c.telefono || "" })}
+              />
             </div>
             <div className="field">
               <label>Teléfono</label>
@@ -3069,6 +3142,11 @@ function Inventario({ data, setData, money }) {
   const [newProduct, setNewProduct] = useState({ nombre: "", categoria: CATEGORIES[0], costo: "", precioVenta: "", stock: "" });
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ nombre: "", categoria: CATEGORIES[0], costo: "", precioVenta: "", stock: "" });
+  const [showTotalCosto, setShowTotalCosto] = useState(false);
+  const [showStockBajo, setShowStockBajo] = useState(false);
+
+  const totalCosto = data.products.reduce((s, p) => s + (Number(p.costo) || 0) * (Number(p.stock) || 0), 0);
+  const stockBajo = data.products.filter((p) => Number(p.stock) <= 5).slice().sort((a, b) => Number(a.stock) - Number(b.stock));
 
   const removeProduct = (id) => setData((d) => ({ ...d, products: d.products.filter((p) => p.id !== id) }));
   const updatePrecioVenta = (id, value) =>
@@ -3203,6 +3281,58 @@ function Inventario({ data, setData, money }) {
                 Cancelar
               </button>
             </div>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn btn-ghost" onClick={() => setShowTotalCosto((s) => !s)}>
+            <Wallet size={14} /> {showTotalCosto ? "Ocultar" : "Ver"} valor total en costo
+          </button>
+          <button className="btn btn-ghost" onClick={() => setShowStockBajo((s) => !s)}>
+            <AlertTriangle size={14} /> Stock bajo ({stockBajo.length})
+          </button>
+        </div>
+        {showTotalCosto && (
+          <div className="stat-grid" style={{ marginTop: 14 }}>
+            <Card
+              icon={Wallet}
+              tone="primary"
+              label="Valor total en costo del inventario"
+              value={money(totalCosto)}
+              sub={`${data.products.length} productos en stock`}
+            />
+          </div>
+        )}
+        {showStockBajo && (
+          <div style={{ marginTop: 14 }}>
+            {stockBajo.length === 0 ? (
+              <div className="empty-state">No hay productos con stock bajo. Todo en orden.</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Producto</th>
+                    <th>Categoría</th>
+                    <th>Stock</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stockBajo.map((p) => (
+                    <tr key={p.id}>
+                      <td style={{ fontWeight: 700 }}>{p.nombre}</td>
+                      <td>
+                        <Badge tone="neutral">{p.categoria}</Badge>
+                      </td>
+                      <td>
+                        <Badge tone="warning">{p.stock}</Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         )}
       </div>
