@@ -100,6 +100,19 @@ async function fetchTasaBCV() {
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
+// Días anteriores a hoy que tuvieron ventas pero no tienen cierre de caja registrado.
+// Se usa para bloquear nuevas ventas hasta que el usuario cierre la caja de esos días.
+const getFechasPendientesCierre = (data) => {
+  const hoy = todayISO();
+  const fechasConVentas = new Set(
+    (data.sales || [])
+      .filter((s) => s.tipo !== "Financiamiento Cashea" && s.fecha && s.fecha < hoy)
+      .map((s) => s.fecha)
+  );
+  const fechasCerradas = new Set((data.cierresCaja || []).map((c) => c.fecha));
+  return [...fechasConVentas].filter((f) => !fechasCerradas.has(f)).sort();
+};
+
 const addMonths = (isoDate, n) => {
   const d = new Date(isoDate + "T00:00:00");
   d.setMonth(d.getMonth() + n);
@@ -1324,7 +1337,7 @@ export default function App() {
           />
         )}
         {tab === "clientes" && <Clientes data={data} setData={setData} money={money} />}
-        {tab === "ventas" && <Ventas data={data} setData={setData} money={money} walletBalances={walletBalances} />}
+        {tab === "ventas" && <Ventas data={data} setData={setData} money={money} walletBalances={walletBalances} setTab={setTab} />}
         {tab === "caja" && <Caja data={data} setData={setData} money={money} />}
         {tab === "inventario" && <Inventario data={data} setData={setData} money={money} />}
         {tab === "precios" && <ListaPrecios data={data} />}
@@ -1668,7 +1681,7 @@ function ReciboFacturaView({ recibo, data, money, onCerrar }) {
 }
 
 // ==================== VENTAS / FACTURACIÓN ====================
-function Ventas({ data, setData, money, walletBalances }) {
+function Ventas({ data, setData, money, walletBalances, setTab }) {
   const [cliente, setCliente] = useState({ nombre: "", cedula: "", telefono: "" });
   const [step, setStep] = useState("cliente");
   const [tipoVenta, setTipoVenta] = useState(null);
@@ -2183,6 +2196,32 @@ function Ventas({ data, setData, money, walletBalances }) {
 
   if (reciboFactura) {
     return <ReciboFacturaView recibo={reciboFactura} data={data} money={money} onCerrar={() => setReciboFactura(null)} />;
+  }
+
+  const fechasPendientesCierre = getFechasPendientesCierre(data);
+
+  if (fechasPendientesCierre.length > 0) {
+    return (
+      <div className="panel">
+        <div className="panel-title">
+          <Lock size={16} /> Cierre de caja pendiente
+        </div>
+        <div style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: 12 }}>
+          No puedes registrar nuevas ventas hasta cerrar la caja de{" "}
+          {fechasPendientesCierre.length === 1 ? "este día" : "estos días"}:
+        </div>
+        <ul style={{ margin: "0 0 16px", paddingLeft: 20 }}>
+          {fechasPendientesCierre.map((f) => (
+            <li key={f} style={{ fontWeight: 700, marginBottom: 4 }}>
+              {fmtDate(f)}
+            </li>
+          ))}
+        </ul>
+        <button className="btn btn-primary" onClick={() => setTab && setTab("caja")}>
+          <Calculator size={14} /> Ir a Caja para cerrar
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -2749,7 +2788,8 @@ function Ventas({ data, setData, money, walletBalances }) {
 
 // ==================== CAJA ====================
 function Caja({ data, setData, money }) {
-  const [fecha, setFecha] = useState(todayISO());
+  const fechasPendientesCierre = getFechasPendientesCierre(data);
+  const [fecha, setFecha] = useState(() => (fechasPendientesCierre.length > 0 ? fechasPendientesCierre[0] : todayISO()));
 
   const ventasDelDia = data.sales.filter((s) => s.fecha === fecha && s.tipo !== "Financiamiento Cashea");
   const cierreExistente = data.cierresCaja.find((c) => c.fecha === fecha);
@@ -2784,6 +2824,23 @@ function Caja({ data, setData, money }) {
 
   return (
     <>
+      {fechasPendientesCierre.length > 0 && (
+        <div className="panel" style={{ borderColor: "var(--color-danger, #dc2626)" }}>
+          <div className="panel-title">
+            <Lock size={16} /> Tienes {fechasPendientesCierre.length === 1 ? "un día" : `${fechasPendientesCierre.length} días`} sin cerrar
+          </div>
+          <div style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: 10 }}>
+            No se pueden registrar nuevas ventas hasta cerrar la caja de:
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {fechasPendientesCierre.map((f) => (
+              <button key={f} className={`btn btn-sm ${fecha === f ? "btn-primary" : "btn-ghost"}`} onClick={() => setFecha(f)}>
+                {fmtDate(f)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="panel">
         <div className="panel-title">
           <Calculator size={16} /> Caja del día
