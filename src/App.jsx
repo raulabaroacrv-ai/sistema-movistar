@@ -3882,21 +3882,17 @@ function Compras({ data, setData, money, walletBalances }) {
           <div className="form-grid">
             <div className="field">
               <label>Producto</label>
-              <select
+              <BuscadorProducto
+                products={data.products}
                 value={productId}
-                onChange={(e) => {
-                  setProductId(e.target.value);
-                  const prod = data.products.find((p) => p.id === e.target.value);
+                onChange={(id) => {
+                  setProductId(id);
+                  const prod = data.products.find((p) => p.id === id);
                   setPrecioVentaExistente(prod ? String(prod.precioVenta) : "");
                 }}
-              >
-                <option value="">Seleccionar producto...</option>
-                {data.products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    [{p.categoria}] {p.nombre} (costo actual {money(p.costo)} · stock {p.stock})
-                  </option>
-                ))}
-              </select>
+                placeholder="Buscar producto por nombre..."
+                renderLabel={(p) => `[${p.categoria}] ${p.nombre} (costo actual ${money(p.costo)} · stock ${p.stock})`}
+              />
             </div>
             <div className="field">
               <label>Cantidad</label>
