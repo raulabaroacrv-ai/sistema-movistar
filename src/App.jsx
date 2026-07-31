@@ -131,6 +131,47 @@ const fmtDate = (iso) => {
   return `${d}/${m}/${y}`;
 };
 
+// Marcas conocidas para agrupar productos por marca (Samsung con Samsung, Honor con Honor, etc.)
+// sin depender de que el nombre del producto empiece exactamente igual — así "TELEFON INFINIX..."
+// y "TELEFONO INFINIX..." (con o sin errores de tipeo) igual quedan agrupados juntos.
+const MARCAS_CONOCIDAS = [
+  "SAMSUNG",
+  "HONOR",
+  "MOTOROLA",
+  "INFINIX",
+  "TECNO",
+  "REDMI",
+  "XIAOMI",
+  "POCO",
+  "ALCATEL",
+  "IPHONE",
+  "APPLE",
+  "SMOOTH",
+  "HUAWEI",
+  "VIVO",
+  "OPPO",
+  "REALME",
+  "NOKIA",
+  "ZTE",
+];
+
+const extraerMarca = (nombre) => {
+  const upper = (nombre || "").toUpperCase();
+  for (const marca of MARCAS_CONOCIDAS) {
+    if (upper.includes(marca)) return marca;
+  }
+  return upper; // sin marca reconocida: se ordena por su propio nombre
+};
+
+// Orden usado en Lista de Precios, Inventario y los buscadores de producto: agrupa por marca
+// reconocida y, dentro de cada marca, alfabéticamente por nombre completo.
+const compararPorMarca = (a, b) => {
+  const ma = extraerMarca(a.nombre);
+  const mb = extraerMarca(b.nombre);
+  if (ma !== mb) return ma.localeCompare(mb);
+  return (a.nombre || "").localeCompare(b.nombre || "");
+};
+
 const marginPct = (costo, precio) => {
   const c = Number(costo) || 0;
   const p = Number(precio) || 0;
@@ -395,7 +436,7 @@ function BuscadorProducto({ products, value, onChange, placeholder, renderLabel,
   const [open, setOpen] = useState(false);
   const selected = products.find((p) => p.id === value);
   const q = query.trim().toLowerCase();
-  const filtered = q ? products.filter((p) => (p.nombre || "").toLowerCase().includes(q)) : products;
+  const filtered = (q ? products.filter((p) => (p.nombre || "").toLowerCase().includes(q)) : products).slice().sort(compararPorMarca);
 
   return (
     <div style={{ position: "relative" }}>
@@ -3049,7 +3090,7 @@ function ListaPrecios({ data, setData }) {
     productos: data.products
       .filter((p) => g.match(p) && Number(p.stock) > 0)
       .slice()
-      .sort((a, b) => a.nombre.localeCompare(b.nombre)),
+      .sort(compararPorMarca),
   })).filter((g) => g.productos.length > 0);
 
   const construirTexto = () => {
@@ -3332,7 +3373,7 @@ function Inventario({ data, setData, money }) {
   };
   const removePlan = (id) => setData((d) => ({ ...d, planes: d.planes.filter((p) => p.id !== id) }));
 
-  const filtered = catFilter === "Todos" ? data.products : data.products.filter((p) => p.categoria === catFilter);
+  const filtered = (catFilter === "Todos" ? data.products : data.products.filter((p) => p.categoria === catFilter)).slice().sort(compararPorMarca);
 
   return (
     <>
