@@ -890,6 +890,7 @@ export default function App() {
     saldosIniciales: {},
     transferenciasOpercoll: [],
     ultimoNumeroFactura: 0,
+    cholloPct: 17,
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -964,6 +965,7 @@ export default function App() {
         const saldosIniciales = parsed.saldosIniciales || {};
         const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
         const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
+        const cholloPct = parsed.cholloPct != null ? parsed.cholloPct : 17;
         setData((d) => ({
           ...d,
           ...parsed,
@@ -977,6 +979,7 @@ export default function App() {
           saldosIniciales,
           transferenciasOpercoll,
           ultimoNumeroFactura,
+          cholloPct,
         }));
       } else {
         setData((d) => ({ ...d, planes: DEFAULT_PLANES }));
@@ -1401,7 +1404,7 @@ export default function App() {
         {tab === "ventas" && <Ventas data={data} setData={setData} money={money} walletBalances={walletBalances} setTab={setTab} />}
         {tab === "caja" && <Caja data={data} setData={setData} money={money} />}
         {tab === "inventario" && <Inventario data={data} setData={setData} money={money} />}
-        {tab === "precios" && <ListaPrecios data={data} />}
+        {tab === "precios" && <ListaPrecios data={data} setData={setData} />}
         {tab === "compras" && <Compras data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "pagar" && <CuentasPorPagar data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "creditos" && <Creditos data={data} setData={setData} money={money} />}
@@ -3019,9 +3022,9 @@ const PRICE_LIST_GROUPS = [
   { key: "accesorio", label: "Accesorios", emoji: "🎧", match: (p) => p.categoria === "Accesorio" },
 ];
 
-function ListaPrecios({ data }) {
+function ListaPrecios({ data, setData }) {
   const [copiado, setCopiado] = useState(false);
-  const [modo, setModo] = useState("regular"); // "regular" | "cashea"
+  const [modo, setModo] = useState("regular"); // "regular" | "cashea" | "chollo"
 
   const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtBs = (n) => `Bs. ${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -3031,6 +3034,9 @@ function ListaPrecios({ data }) {
   const precioBCV = (p) => (Number(p.precioVenta) * (Number(data.tasaInterna) || 0)) / (Number(data.tasaBCV) || 1);
   // Precio Cashea: precio a BCV + 7%, que es la comisión que cobra Cashea por su servicio de financiamiento.
   const precioCashea = (p) => precioBCV(p) * 1.07;
+  // Precio Chollo: precio de venta normal en $ + un % ajustable (por defecto 17%), exclusivo de esta lista.
+  const cholloPct = data.cholloPct != null ? Number(data.cholloPct) : 17;
+  const precioChollo = (p) => Number(p.precioVenta) * (1 + cholloPct / 100);
 
   const grupos = PRICE_LIST_GROUPS.map((g) => ({
     ...g,
@@ -3048,6 +3054,20 @@ function ListaPrecios({ data }) {
         lineas.push(`${g.emoji} *${g.label.toUpperCase()}*`);
         g.productos.forEach((p) => {
           lineas.push(`• ${p.nombre}: ${fmtUSD(precioCashea(p))}`);
+        });
+        lineas.push("");
+      });
+      return lineas.join("\n").trim();
+    }
+    if (modo === "chollo") {
+      lineas.push("*LISTA DE PRECIOS CHOLLO — PUNTO MOVISTAR*");
+      lineas.push(`Precio de venta en $ + ${cholloPct}%`);
+      lineas.push(`Actualizado: ${fmtDate(todayISO())}`);
+      lineas.push("");
+      grupos.forEach((g) => {
+        lineas.push(`${g.emoji} *${g.label.toUpperCase()}*`);
+        g.productos.forEach((p) => {
+          lineas.push(`• ${p.nombre}: ${fmtUSD(precioChollo(p))}`);
         });
         lineas.push("");
       });
@@ -3099,9 +3119,11 @@ function ListaPrecios({ data }) {
         <div style={{ fontSize: 12, color: "var(--color-text-muted)", maxWidth: 480 }}>
           {modo === "cashea"
             ? "Lista de precios Cashea: precio a tasa BCV + 7%, que es la comisión que cobra Cashea por su servicio de financiamiento."
+            : modo === "chollo"
+            ? `Lista de precios Chollo: precio de venta en $ + ${cholloPct}%. Ajusta el porcentaje con el botón de la derecha; el cambio aplica solo a esta lista.`
             : "Se arma sola desde tu Inventario: Teléfonos, Baterías, Repuestos y Accesorios, con su precio en $ a tasa interna, su equivalente en Bs. a tasa interna, y lo que esos mismos Bs. representan en $ si se calculan a tasa BCV."}
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ display: "flex", gap: 6 }}>
             <button className={`btn btn-sm ${modo === "regular" ? "btn-primary" : "btn-ghost"}`} onClick={() => setModo("regular")}>
               Precio regular
@@ -3109,7 +3131,13 @@ function ListaPrecios({ data }) {
             <button className={`btn btn-sm ${modo === "cashea" ? "btn-primary" : "btn-ghost"}`} onClick={() => setModo("cashea")}>
               Precio Cashea
             </button>
+            <button className={`btn btn-sm ${modo === "chollo" ? "btn-primary" : "btn-ghost"}`} onClick={() => setModo("chollo")}>
+              Precio Chollo
+            </button>
           </div>
+          {modo === "chollo" && (
+            <TasaBadge label="% Chollo" value={cholloPct} onSave={(v) => setData((d) => ({ ...d, cholloPct: v }))} />
+          )}
           <button className="btn btn-primary" onClick={compartirWhatsApp}>
             <Share2 size={14} /> Compartir por WhatsApp
           </button>
@@ -3138,6 +3166,12 @@ function ListaPrecios({ data }) {
                     <th>Precio Cashea (BCV + 7%)</th>
                     <th>Stock</th>
                   </tr>
+                ) : modo === "chollo" ? (
+                  <tr>
+                    <th>Producto</th>
+                    <th>Precio Chollo ($ + {cholloPct}%)</th>
+                    <th>Stock</th>
+                  </tr>
                 ) : (
                   <tr>
                     <th>Producto</th>
@@ -3154,6 +3188,12 @@ function ListaPrecios({ data }) {
                     <tr key={p.id}>
                       <td>{p.nombre}</td>
                       <td style={{ fontWeight: 700 }}>{fmtUSD(precioCashea(p))}</td>
+                      <td>{Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock}</Badge> : <Badge tone="neutral">{p.stock}</Badge>}</td>
+                    </tr>
+                  ) : modo === "chollo" ? (
+                    <tr key={p.id}>
+                      <td>{p.nombre}</td>
+                      <td style={{ fontWeight: 700 }}>{fmtUSD(precioChollo(p))}</td>
                       <td>{Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock}</Badge> : <Badge tone="neutral">{p.stock}</Badge>}</td>
                     </tr>
                   ) : (
