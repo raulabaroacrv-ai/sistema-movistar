@@ -3025,6 +3025,10 @@ const PRICE_LIST_GROUPS = [
 function ListaPrecios({ data, setData }) {
   const [copiado, setCopiado] = useState(false);
   const [modo, setModo] = useState("regular"); // "regular" | "cashea" | "chollo"
+  const [editando, setEditando] = useState(false);
+
+  const updatePrecioVenta = (id, value) =>
+    setData((d) => ({ ...d, products: d.products.map((p) => (p.id === id ? { ...p, precioVenta: Number(value) || 0 } : p)) }));
 
   const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtBs = (n) => `Bs. ${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -3121,6 +3125,8 @@ function ListaPrecios({ data, setData }) {
             ? "Lista de precios Cashea: precio a tasa BCV + 7%, que es la comisión que cobra Cashea por su servicio de financiamiento."
             : modo === "chollo"
             ? `Lista de precios Chollo: precio de venta en $ + ${cholloPct}%. Ajusta el porcentaje con el botón de la derecha; el cambio aplica solo a esta lista.`
+            : editando
+            ? "Modo edición: cambia el precio en $ de cualquier producto y presiona fuera del campo para guardarlo. Esto actualiza el precio de venta en tu Inventario, así que también se reflejará en Cashea, Chollo y en Ventas."
             : "Se arma sola desde tu Inventario: Teléfonos, Baterías, Repuestos y Accesorios, con su precio en $ a tasa interna, su equivalente en Bs. a tasa interna, y lo que esos mismos Bs. representan en $ si se calculan a tasa BCV."}
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -3128,13 +3134,30 @@ function ListaPrecios({ data, setData }) {
             <button className={`btn btn-sm ${modo === "regular" ? "btn-primary" : "btn-ghost"}`} onClick={() => setModo("regular")}>
               Precio regular
             </button>
-            <button className={`btn btn-sm ${modo === "cashea" ? "btn-primary" : "btn-ghost"}`} onClick={() => setModo("cashea")}>
+            <button
+              className={`btn btn-sm ${modo === "cashea" ? "btn-primary" : "btn-ghost"}`}
+              onClick={() => {
+                setModo("cashea");
+                setEditando(false);
+              }}
+            >
               Precio Cashea
             </button>
-            <button className={`btn btn-sm ${modo === "chollo" ? "btn-primary" : "btn-ghost"}`} onClick={() => setModo("chollo")}>
+            <button
+              className={`btn btn-sm ${modo === "chollo" ? "btn-primary" : "btn-ghost"}`}
+              onClick={() => {
+                setModo("chollo");
+                setEditando(false);
+              }}
+            >
               Precio Chollo
             </button>
           </div>
+          {modo === "regular" && (
+            <button className={`btn btn-sm ${editando ? "btn-primary" : "btn-ghost"}`} onClick={() => setEditando((e) => !e)}>
+              {editando ? <Check size={13} /> : <Tag size={13} />} {editando ? "Listo" : "Editar precios"}
+            </button>
+          )}
           {modo === "chollo" && (
             <TasaBadge label="% Chollo" value={cholloPct} onSave={(v) => setData((d) => ({ ...d, cholloPct: v }))} />
           )}
@@ -3199,7 +3222,19 @@ function ListaPrecios({ data, setData }) {
                   ) : (
                     <tr key={p.id}>
                       <td>{p.nombre}</td>
-                      <td style={{ fontWeight: 700 }}>{fmtUSD(p.precioVenta)}</td>
+                      <td style={{ fontWeight: 700 }}>
+                        {editando ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            defaultValue={p.precioVenta}
+                            onBlur={(e) => updatePrecioVenta(p.id, e.target.value)}
+                            style={{ width: 90, padding: "5px 7px", borderRadius: 6, border: "1px solid var(--color-border)", fontSize: 12.5 }}
+                          />
+                        ) : (
+                          fmtUSD(p.precioVenta)
+                        )}
+                      </td>
                       <td>{fmtBs(p.precioVenta * data.tasaInterna)}</td>
                       <td>{fmtUSD(precioBCV(p))}</td>
                       <td>{Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock}</Badge> : <Badge tone="neutral">{p.stock}</Badge>}</td>
