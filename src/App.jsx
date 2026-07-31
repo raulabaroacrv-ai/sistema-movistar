@@ -3021,6 +3021,7 @@ const PRICE_LIST_GROUPS = [
 
 function ListaPrecios({ data }) {
   const [copiado, setCopiado] = useState(false);
+  const [modo, setModo] = useState("regular"); // "regular" | "cashea"
 
   const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtBs = (n) => `Bs. ${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -3028,6 +3029,8 @@ function ListaPrecios({ data }) {
   // mismos bolívares que ese producto vale a tasa interna. Como tasa interna > tasa BCV, esos
   // bolívares valen más dólares al convertirlos con la tasa (más baja) del BCV.
   const precioBCV = (p) => (Number(p.precioVenta) * (Number(data.tasaInterna) || 0)) / (Number(data.tasaBCV) || 1);
+  // Precio Cashea: precio a BCV + 7%, que es la comisión que cobra Cashea por su servicio de financiamiento.
+  const precioCashea = (p) => precioBCV(p) * 1.07;
 
   const grupos = PRICE_LIST_GROUPS.map((g) => ({
     ...g,
@@ -3036,6 +3039,20 @@ function ListaPrecios({ data }) {
 
   const construirTexto = () => {
     const lineas = [];
+    if (modo === "cashea") {
+      lineas.push("*LISTA DE PRECIOS CASHEA — PUNTO MOVISTAR*");
+      lineas.push("Precio a BCV + 7% (comisión Cashea)");
+      lineas.push(`Actualizado: ${fmtDate(todayISO())}`);
+      lineas.push("");
+      grupos.forEach((g) => {
+        lineas.push(`${g.emoji} *${g.label.toUpperCase()}*`);
+        g.productos.forEach((p) => {
+          lineas.push(`• ${p.nombre}: ${fmtUSD(precioCashea(p))}`);
+        });
+        lineas.push("");
+      });
+      return lineas.join("\n").trim();
+    }
     lineas.push("*LISTA DE PRECIOS — PUNTO MOVISTAR*");
     lineas.push(`Tasa interna: ${data.tasaInterna} · Tasa BCV: ${data.tasaBCV}`);
     lineas.push(`Actualizado: ${fmtDate(todayISO())}`);
@@ -3080,10 +3097,19 @@ function ListaPrecios({ data }) {
     <>
       <div className="panel" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontSize: 12, color: "var(--color-text-muted)", maxWidth: 480 }}>
-          Se arma sola desde tu Inventario: Teléfonos, Baterías, Repuestos y Accesorios, con su precio en $ a tasa interna, su
-          equivalente en Bs. a tasa interna, y lo que esos mismos Bs. representan en $ si se calculan a tasa BCV.
+          {modo === "cashea"
+            ? "Lista de precios Cashea: precio a tasa BCV + 7%, que es la comisión que cobra Cashea por su servicio de financiamiento."
+            : "Se arma sola desde tu Inventario: Teléfonos, Baterías, Repuestos y Accesorios, con su precio en $ a tasa interna, su equivalente en Bs. a tasa interna, y lo que esos mismos Bs. representan en $ si se calculan a tasa BCV."}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className={`btn btn-sm ${modo === "regular" ? "btn-primary" : "btn-ghost"}`} onClick={() => setModo("regular")}>
+              Precio regular
+            </button>
+            <button className={`btn btn-sm ${modo === "cashea" ? "btn-primary" : "btn-ghost"}`} onClick={() => setModo("cashea")}>
+              Precio Cashea
+            </button>
+          </div>
           <button className="btn btn-primary" onClick={compartirWhatsApp}>
             <Share2 size={14} /> Compartir por WhatsApp
           </button>
@@ -3106,24 +3132,40 @@ function ListaPrecios({ data }) {
             </div>
             <table>
               <thead>
-                <tr>
-                  <th>Producto</th>
-                  <th>Precio $</th>
-                  <th>Bs. (tasa interna)</th>
-                  <th>$ a BCV</th>
-                  <th>Stock</th>
-                </tr>
+                {modo === "cashea" ? (
+                  <tr>
+                    <th>Producto</th>
+                    <th>Precio Cashea (BCV + 7%)</th>
+                    <th>Stock</th>
+                  </tr>
+                ) : (
+                  <tr>
+                    <th>Producto</th>
+                    <th>Precio $</th>
+                    <th>Bs. (tasa interna)</th>
+                    <th>$ a BCV</th>
+                    <th>Stock</th>
+                  </tr>
+                )}
               </thead>
               <tbody>
-                {g.productos.map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.nombre}</td>
-                    <td style={{ fontWeight: 700 }}>{fmtUSD(p.precioVenta)}</td>
-                    <td>{fmtBs(p.precioVenta * data.tasaInterna)}</td>
-                    <td>{fmtUSD(precioBCV(p))}</td>
-                    <td>{Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock}</Badge> : <Badge tone="neutral">{p.stock}</Badge>}</td>
-                  </tr>
-                ))}
+                {g.productos.map((p) =>
+                  modo === "cashea" ? (
+                    <tr key={p.id}>
+                      <td>{p.nombre}</td>
+                      <td style={{ fontWeight: 700 }}>{fmtUSD(precioCashea(p))}</td>
+                      <td>{Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock}</Badge> : <Badge tone="neutral">{p.stock}</Badge>}</td>
+                    </tr>
+                  ) : (
+                    <tr key={p.id}>
+                      <td>{p.nombre}</td>
+                      <td style={{ fontWeight: 700 }}>{fmtUSD(p.precioVenta)}</td>
+                      <td>{fmtBs(p.precioVenta * data.tasaInterna)}</td>
+                      <td>{fmtUSD(precioBCV(p))}</td>
+                      <td>{Number(p.stock) <= 5 ? <Badge tone="warning">{p.stock}</Badge> : <Badge tone="neutral">{p.stock}</Badge>}</td>
+                    </tr>
+                  )
+                )}
               </tbody>
             </table>
           </div>
