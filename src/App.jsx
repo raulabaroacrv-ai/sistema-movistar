@@ -2110,11 +2110,17 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   const totalCarrito = totalCarritoBruto - descuentoValor;
   const pagosFactura = buildPagos(pagoFactura);
   const esCasheaFactura = pagoFactura.medioPago === "Cashea";
-  // Las baterías (dentro de Repuestos/Accesorios) se cobran a tasa interna, no a tasa BCV como el
-  // resto de la factura. Si el carrito mezcla baterías con otros ítems, el pago en Bs. se reparte
-  // proporcionalmente entre ambas tasas según qué fracción de la factura son baterías.
+  // Las baterías (dentro de Repuestos/Accesorios) y los Teléfonos de Contado se cobran a tasa
+  // interna, no a tasa BCV como el resto de la factura — igual que en Lista de Precios, donde el
+  // precio en $ de un producto YA está a tasa interna y el "$ a BCV" es solo un equivalente
+  // informativo, no lo que hay que cobrar. Así, si se pone a cobrar $410 por un teléfono, esos
+  // $410 son a tasa interna (lo que hay que cobrar en Bs. es 410 × tasa interna), consistente con
+  // distribuirPagoEntreItems que ya reparte los pagos usando siempre tasa interna. Si el carrito
+  // mezcla estos ítems con otros (Línea Nueva, Cambio de línea), el pago en Bs. se reparte
+  // proporcionalmente entre ambas tasas según qué fracción de la factura les corresponde.
   const esItemBateria = (it) => it.tipo === "Accesorios" && /bateria|batería/i.test((it.payload && it.payload.nombre) || "");
-  const totalCarritoBaterias = carritoFactura.filter(esItemBateria).reduce((s, it) => s + it.montoCliente, 0);
+  const esItemTasaInterna = (it) => esItemBateria(it) || it.tipo === "Teléfono Contado";
+  const totalCarritoBaterias = carritoFactura.filter(esItemTasaInterna).reduce((s, it) => s + it.montoCliente, 0);
   const bateriaShareFactura = totalCarritoBruto > 0 ? totalCarritoBaterias / totalCarritoBruto : 0;
   const pagosFacturaBsMonto = pagosFactura.filter((p) => BS_METHODS.includes(p.metodo)).reduce((s, p) => s + (Number(p.monto) || 0), 0);
   const pagosFacturaUsdMonto = pagosFactura.filter((p) => !BS_METHODS.includes(p.metodo)).reduce((s, p) => s + (Number(p.monto) || 0), 0);
@@ -2678,6 +2684,19 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                     />
                     <MonedaToggle value={precioContadoMoneda} onChange={setPrecioContadoMoneda} />
                   </div>
+                  {(() => {
+                    const p = data.products.find((pp) => pp.id === telProductId);
+                    if (!p) return null;
+                    const precioUSD =
+                      precioContado !== "" ? convertAmountCurrency(precioContado, precioContadoMoneda, "USD", data.tasaInterna) : Number(p.precioVenta) || 0;
+                    const precioBs = precioUSD * (Number(data.tasaInterna) || 0);
+                    const precioBCVEquiv = precioBCVProducto({ precioVenta: precioUSD }, data.tasaInterna, data.tasaBCV);
+                    return (
+                      <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 4 }}>
+                        A tasa interna: ${precioUSD.toFixed(2)} · Bs. {precioBs.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} — Equivalente a ${precioBCVEquiv.toFixed(2)} a tasa BCV
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -2920,7 +2939,7 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
               </div>
               {bateriaShareFactura > 0 && (
                 <div className="receipt-row receipt-muted">
-                  <span>↳ baterías cobradas a tasa interna</span>
+                  <span>↳ baterías/teléfonos cobrados a tasa interna</span>
                   <span>{Math.round(bateriaShareFactura * 100)}% de la factura</span>
                 </div>
               )}
@@ -2937,7 +2956,7 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                 <div className="receipt-status danger">
                   Falta por cobrar: {money(diffFactura)}
                   <div style={{ fontSize: 11, fontWeight: 700 }}>
-                    Pide Bs. {diffFacturaBs.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {bateriaShareFactura > 0 ? "(incluye baterías a tasa interna)" : "(tasa BCV — así se factura)"}
+                    Pide Bs. {diffFacturaBs.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {bateriaShareFactura > 0 ? "(incluye baterías/teléfonos a tasa interna)" : "(tasa BCV — así se factura)"}
                   </div>
                   {bateriaShareFactura === 0 && (
                     <div style={{ fontSize: 10.5, fontWeight: 500 }}>
