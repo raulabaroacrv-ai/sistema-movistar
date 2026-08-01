@@ -1693,7 +1693,68 @@ function Clientes({ data, setData, money }) {
 
 // Recibo numerado que se muestra justo después de facturar (carrito o teléfono a crédito),
 // con los datos del cliente, lo que se llevó y cómo quedó pagado.
-function ReciboFacturaView({ recibo, data, money, onCerrar }) {
+// Descripción legible de lo que se llevó el cliente en una línea de venta ya guardada, para
+// mostrar en las tablas de historial en vez del tipo genérico ("Línea Nueva", "Accesorios", etc.).
+const descripcionVentaLinea = (s) => {
+  switch (s.tipo) {
+    case "Línea Nueva":
+      return `Línea Nueva · ${s.simNombre || s.simCategoria || "SIM"}${s.planNombre ? " · Plan " + s.planNombre : ""}`;
+    case "Cambio/Recuperación de Línea":
+      return `Cambio/Recuperación · ${s.simNombre || s.simCategoria || "línea"}`;
+    case "Teléfono Contado":
+      return s.nombre || "Teléfono";
+    case "Teléfono Crédito":
+      return `${s.nombre || "Teléfono"} · crédito ${s.plataforma || ""}`.trim();
+    case "Accesorios":
+      return (s.items || []).map((i) => `${i.nombre} × ${i.cantidad}`).join(", ") || "Accesorios";
+    default:
+      return s.tipo;
+  }
+};
+
+// Reconstruye la factura original de una venta ya guardada, agrupando todas las líneas que se
+// facturaron juntas (mismo facturaGrupoId) — así "Ver factura" muestra exactamente lo que se
+// facturó ese día, aunque el carrito haya tenido varios ítems de tipos distintos.
+const construirReciboHistorico = (sale, allSales, data) => {
+  const ventasGrupo = sale.facturaGrupoId ? allSales.filter((s) => s.facturaGrupoId === sale.facturaGrupoId) : [sale];
+  const financiamiento = ventasGrupo.find((s) => s.tipo === "Financiamiento Cashea");
+  const ventaCredito = ventasGrupo.find((s) => s.tipo === "Teléfono Crédito");
+  const lineasVisibles = ventasGrupo.filter((s) => s.tipo !== "Financiamiento Cashea");
+
+  const items = lineasVisibles.map((s) => ({
+    descripcion: descripcionVentaLinea(s),
+    monto: s.tipo === "Teléfono Crédito" ? Number(s.precioVenta) || 0 : pagosNativeTotal(s.pagos || [], data.currency, data.tasaInterna),
+  }));
+
+  const pagos = lineasVisibles.flatMap((s) => s.pagos || []);
+  const total = items.reduce((sum, it) => sum + it.monto, 0);
+  const cobrado = pagosNativeTotal(pagos, data.currency, data.tasaInterna);
+  const primera = ventasGrupo[0];
+
+  return {
+    numero: primera.numeroFactura || "-",
+    fecha: primera.fecha,
+    cliente: { nombre: primera.clienteNombre, cedula: primera.clienteCedula, telefono: primera.clienteTelefono },
+    items,
+    pagos,
+    totalBruto: total,
+    descuento: 0,
+    total,
+    cobrado,
+    esCashea: !!financiamiento,
+    inicialCashea: financiamiento ? pagos.filter((p) => p.metodo === "Cashea").reduce((s, p) => s + (Number(p.monto) || 0), 0) : 0,
+    financiadoCashea: financiamiento ? Number(financiamiento.montoFinanciado) || 0 : 0,
+    montoFinanciadoNetoCashea: financiamiento ? Number(financiamiento.montoFinanciadoNeto) || 0 : 0,
+    esCredito: !!ventaCredito,
+    plataformaCredito: ventaCredito ? ventaCredito.plataforma : undefined,
+    numeroCuotas: ventaCredito ? ventaCredito.numeroCuotas : undefined,
+    montoCuota: ventaCredito
+      ? Math.max(0, (Number(ventaCredito.precioVenta) - Number(ventaCredito.inicial)) / (Number(ventaCredito.numeroCuotas) || 1))
+      : undefined,
+  };
+};
+
+function ReciboFacturaView({ recibo, data, money, onCerrar, cerrarLabel = "Nueva venta" }) {
   const r = recibo;
   return (
     <div className="panel" style={{ maxWidth: 520 }}>
@@ -1799,8 +1860,34 @@ function ReciboFacturaView({ recibo, data, money, onCerrar }) {
       </div>
 
       <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 14 }} onClick={onCerrar}>
-        <Check size={14} /> Nueva venta
+        <Check size={14} /> {cerrarLabel}
       </button>
+    </div>
+  );
+}
+
+// Modal reutilizable para ver, desde cualquier tabla de historial, la factura ya generada de una
+// venta anterior sin salir de la pantalla en la que se está.
+function FacturaModal({ recibo, data, money, onClose }) {
+  if (!recibo) return null;
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 23, 42, 0.55)",
+        zIndex: 100,
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        overflowY: "auto",
+        padding: "40px 16px",
+      }}
+      onClick={onClose}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 520 }}>
+        <ReciboFacturaView recibo={recibo} data={data} money={money} onCerrar={onClose} cerrarLabel="Cerrar" />
+      </div>
     </div>
   );
 }
@@ -1817,6 +1904,7 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   const [descuentoMoneda, setDescuentoMoneda] = useState(data.currency);
   const [reciboFactura, setReciboFactura] = useState(null);
   const [confirmarEliminarId, setConfirmarEliminarId] = useState(null);
+  const [facturaViendoId, setFacturaViendoId] = useState(null);
 
   // Línea nueva
   const [planId, setPlanId] = useState("");
@@ -2889,7 +2977,7 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                 <tr>
                   <th>Fecha</th>
                   <th>Cliente</th>
-                  <th>Tipo</th>
+                  <th>Qué se llevó</th>
                   <th>Ganancia</th>
                   <th></th>
                 </tr>
@@ -2900,7 +2988,7 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                     <td>{fmtDate(s.fecha)}</td>
                     <td>{s.clienteNombre}</td>
                     <td>
-                      <Badge tone="neutral">{s.tipo}</Badge>
+                      <Badge tone="neutral">{descripcionVentaLinea(s)}</Badge>
                     </td>
                     <td style={{ fontWeight: 700, color: s.ganancia >= 0 ? "var(--color-success)" : "var(--color-danger)" }}>{money(s.ganancia)}</td>
                     <td>
@@ -2921,13 +3009,22 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                           </button>
                         </div>
                       ) : (
-                        <button
-                          onClick={() => setConfirmarEliminarId(s.id)}
-                          title="Eliminar venta"
-                          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-danger)", padding: 4, display: "flex" }}
-                        >
-                          <Trash2 size={15} />
-                        </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, whiteSpace: "nowrap" }}>
+                          <button
+                            onClick={() => setFacturaViendoId(s.id)}
+                            title="Ver factura"
+                            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-primary)", padding: 4, display: "flex" }}
+                          >
+                            <Receipt size={15} />
+                          </button>
+                          <button
+                            onClick={() => setConfirmarEliminarId(s.id)}
+                            title="Eliminar venta"
+                            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-danger)", padding: 4, display: "flex" }}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -2936,6 +3033,15 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
             </table>
           ))}
       </div>
+
+      {facturaViendoId && (
+        <FacturaModal
+          recibo={construirReciboHistorico(data.sales.find((s) => s.id === facturaViendoId), data.sales, data)}
+          data={data}
+          money={money}
+          onClose={() => setFacturaViendoId(null)}
+        />
+      )}
     </>
   );
 }
@@ -2944,6 +3050,7 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
 function Caja({ data, setData, money }) {
   const fechasPendientesCierre = getFechasPendientesCierre(data);
   const [fecha, setFecha] = useState(() => (fechasPendientesCierre.length > 0 ? fechasPendientesCierre[0] : todayISO()));
+  const [facturaViendoId, setFacturaViendoId] = useState(null);
 
   const ventasDelDia = data.sales.filter((s) => s.fecha === fecha && s.tipo !== "Financiamiento Cashea");
   const cierreExistente = data.cierresCaja.find((c) => c.fecha === fecha);
@@ -3036,9 +3143,10 @@ function Caja({ data, setData, money }) {
             <thead>
               <tr>
                 <th>Cliente</th>
-                <th>Tipo de venta</th>
+                <th>Qué se llevó</th>
                 <th>Método(s) de pago</th>
                 <th>Monto cobrado</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -3046,16 +3154,34 @@ function Caja({ data, setData, money }) {
                 <tr key={v.id}>
                   <td style={{ fontWeight: 700 }}>{v.clienteNombre}</td>
                   <td>
-                    <Badge tone="neutral">{v.tipo}</Badge>
+                    <Badge tone="neutral">{descripcionVentaLinea(v)}</Badge>
                   </td>
                   <td>{(v.pagos || []).map((p) => p.metodo).join(" + ") || "-"}</td>
                   <td style={{ fontWeight: 700 }}>{money(montoDeVenta(v))}</td>
+                  <td>
+                    <button
+                      onClick={() => setFacturaViendoId(v.id)}
+                      title="Ver factura"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-primary)", padding: 4, display: "flex" }}
+                    >
+                      <Receipt size={15} />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
+
+      {facturaViendoId && (
+        <FacturaModal
+          recibo={construirReciboHistorico(data.sales.find((s) => s.id === facturaViendoId), data.sales, data)}
+          data={data}
+          money={money}
+          onClose={() => setFacturaViendoId(null)}
+        />
+      )}
 
       {historial.length > 0 && (
         <div className="panel">
@@ -3104,6 +3230,7 @@ function ListaPrecios({ data, setData }) {
   const [copiado, setCopiado] = useState(false);
   const [modo, setModo] = useState("regular"); // "regular" | "cashea" | "chollo"
   const [editando, setEditando] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
 
   const updatePrecioVenta = (id, value) =>
     setData((d) => ({ ...d, products: d.products.map((p) => (p.id === id ? { ...p, precioVenta: Number(value) || 0 } : p)) }));
@@ -3121,6 +3248,7 @@ function ListaPrecios({ data, setData }) {
     ...g,
     productos: data.products
       .filter((p) => g.match(p) && Number(p.stock) > 0)
+      .filter((p) => (busqueda.trim() ? (p.nombre || "").toLowerCase().includes(busqueda.trim().toLowerCase()) : true))
       .slice()
       .sort(compararPorMarca),
   })).filter((g) => g.productos.length > 0);
@@ -3197,6 +3325,15 @@ function ListaPrecios({ data, setData }) {
 
   return (
     <>
+      <div className="panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="field" style={{ maxWidth: 320 }}>
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar producto por nombre..."
+          />
+        </div>
+      </div>
       <div className="panel" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontSize: 12, color: "var(--color-text-muted)", maxWidth: 480 }}>
           {modo === "cashea"
@@ -3339,6 +3476,7 @@ function Inventario({ data, setData, money }) {
   const [editForm, setEditForm] = useState({ nombre: "", categoria: CATEGORIES[0], costo: "", precioVenta: "", stock: "" });
   const [showTotalCosto, setShowTotalCosto] = useState(false);
   const [showStockBajo, setShowStockBajo] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
 
   const totalCosto = data.products.reduce((s, p) => s + (Number(p.costo) || 0) * (Number(p.stock) || 0), 0);
   const stockBajo = data.products.filter((p) => Number(p.stock) <= 5).slice().sort((a, b) => Number(a.stock) - Number(b.stock));
@@ -3405,7 +3543,10 @@ function Inventario({ data, setData, money }) {
   };
   const removePlan = (id) => setData((d) => ({ ...d, planes: d.planes.filter((p) => p.id !== id) }));
 
-  const filtered = (catFilter === "Todos" ? data.products : data.products.filter((p) => p.categoria === catFilter)).slice().sort(compararPorMarca);
+  const filtered = (catFilter === "Todos" ? data.products : data.products.filter((p) => p.categoria === catFilter))
+    .filter((p) => (busqueda.trim() ? (p.nombre || "").toLowerCase().includes(busqueda.trim().toLowerCase()) : true))
+    .slice()
+    .sort(compararPorMarca);
 
   return (
     <>
@@ -3536,6 +3677,13 @@ function Inventario({ data, setData, money }) {
         <div className="panel-title">
           <Boxes size={16} /> Inventario ({filtered.length})
         </div>
+        <div className="field" style={{ maxWidth: 320, marginBottom: 10 }}>
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar producto por nombre..."
+          />
+        </div>
         <div className="cat-tabs">
           {["Todos", ...CATEGORIES].map((c) => (
             <button key={c} className={`cat-tab ${catFilter === c ? "active" : ""}`} onClick={() => setCatFilter(c)}>
@@ -3544,7 +3692,7 @@ function Inventario({ data, setData, money }) {
           ))}
         </div>
         {filtered.length === 0 ? (
-          <div className="empty-state">No hay productos en esta categoría todavía.</div>
+          <div className="empty-state">No hay productos que coincidan con la búsqueda.</div>
         ) : (
           <table>
             <thead>
