@@ -5026,6 +5026,15 @@ function Billetera({ data, setData, walletBalances }) {
     return result;
   }, [data.sales]);
 
+  // Marca un financiamiento de Cashea/Chollo como recibido — igual que en Créditos, se usa aquí
+  // para poder cobrarlo directamente desde el detalle de la cuenta en Billetera.
+  const marcarLiquidado = (saleId) => {
+    setData((d) => ({
+      ...d,
+      sales: d.sales.map((s) => (s.id === saleId ? { ...s, liquidado: true, fechaLiquidacion: todayISO() } : s)),
+    }));
+  };
+
   const cuentaOrigenOpercoll = METHOD_TO_ACCOUNT[metodoOpercoll];
   const disponibleOpercoll = walletBalances[cuentaOrigenOpercoll] || 0;
   const montoOpercollNum = Number(montoOpercoll) || 0;
@@ -5077,6 +5086,10 @@ function Billetera({ data, setData, walletBalances }) {
     const currency = ACCOUNT_CURRENCY[acc];
     const Icon = ACCOUNT_ICON[acc] || Wallet;
     const movimientos = getMovimientosCuenta(data, acc);
+    const esFinanciamiento = acc === "Cashea" || acc === "Chollo";
+    const pendientesCuenta = esFinanciamiento
+      ? data.sales.filter((s) => (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === acc && !s.liquidado)
+      : [];
     return (
       <>
         <button className="btn btn-ghost btn-sm" onClick={() => setCuentaSeleccionada(null)} style={{ marginBottom: 14 }}>
@@ -5085,6 +5098,43 @@ function Billetera({ data, setData, walletBalances }) {
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
           <Card icon={Icon} tone={bal < 0 ? "danger" : "primary"} label={acc} value={fmtAccountAmount(bal, currency)} sub="Saldo acumulado" />
         </div>
+        {esFinanciamiento && (
+          <div className="panel">
+            <div className="panel-title">
+              <RefreshCw size={16} /> Pendiente por cobrar de {acc} ({pendientesCuenta.length})
+            </div>
+            {pendientesCuenta.length === 0 ? (
+              <div className="empty-state">No hay pagos pendientes de {acc}.</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th>Equipo / Cliente</th>
+                    <th>Monto a recibir</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendientesCuenta.map((s) => (
+                    <tr key={s.id}>
+                      <td>{fmtDate(s.fecha)}</td>
+                      <td>
+                        {s.nombre || "Financiamiento de factura"} <span style={{ color: "var(--color-text-muted)" }}>({s.clienteNombre})</span>
+                      </td>
+                      <td style={{ fontWeight: 700 }}>{fmtAccountAmount(s.montoFinanciadoNeto, "USD")}</td>
+                      <td>
+                        <button className="btn btn-primary btn-sm" onClick={() => marcarLiquidado(s.id)}>
+                          <Check size={13} /> Marcar recibido
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
         <div className="panel">
           <div className="panel-title">
             <Icon size={16} /> Movimientos de {acc} ({movimientos.length})
