@@ -1172,14 +1172,16 @@ export default function App() {
     // Money in: Cashea/Chollo pay out the financed amount (net of their commission) about a
     // week after the sale, once you mark it as received — not at the moment you sell it. This
     // applies both to phones financed on credit and to any other product financed through Cashea
-    // directly from the cart (tipo "Financiamiento Cashea").
+    // directly from the cart (tipo "Financiamiento Cashea"). Ese pago se cobra en bolívares a tasa
+    // BCV, y entra directo a Cuenta Bancaria — Cashea/Chollo ya no acumulan saldo propio con este
+    // dinero, solo muestran cuánto queda pendiente por cobrar (se resta de ahí automáticamente).
     data.sales.forEach((s) => {
       if (
         (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") &&
         (s.plataforma === "Cashea" || s.plataforma === "Chollo") &&
         s.liquidado
       ) {
-        balances[s.plataforma] += Number(s.montoFinanciadoNeto) || 0;
+        balances["Cuenta Bancaria"] += (Number(s.montoFinanciadoNeto) || 0) * (Number(data.tasaBCV) || 1);
       }
     });
 
@@ -4625,14 +4627,15 @@ function Creditos({ data, setData, money }) {
         Los créditos se crean automáticamente al facturar una venta de teléfono a crédito, o cualquier factura pagada con
         Cashea (línea nueva, cambio de línea, accesorios o repuestos), en la pestaña Ventas. Cashea y Chollo suelen pagarte
         el monto financiado (neto de su comisión) alrededor de una semana después de la venta — hasta que lo marques como
-        recibido, se muestra como acumulado pendiente y no entra a tu Billetera.
+        recibido, se muestra como acumulado pendiente y no entra a tu Billetera. Al marcarlo recibido, ese monto se cobra
+        en bolívares a tasa BCV y se acredita directo a Cuenta Bancaria.
       </div>
       {Object.keys(porPlataforma).length > 0 && (
         <div className="stat-grid" style={{ marginBottom: 16 }}>
           {Object.entries(porPlataforma).map(([plat, montos]) => (
             <React.Fragment key={plat}>
               <Card icon={RefreshCw} tone={montos.pendiente > 0 ? "warning" : "success"} label={`Pendiente de ${plat} (facturado)`} value={money(montos.pendiente)} sub="Aún no acreditado a tu Billetera" />
-              <Card icon={Wallet} tone="success" label={`Ya recibido de ${plat}`} value={money(montos.recibido)} sub="En tu Billetera" />
+              <Card icon={Wallet} tone="success" label={`Ya recibido de ${plat}`} value={money(montos.recibido)} sub="Acreditado a Cuenta Bancaria (a tasa BCV)" />
             </React.Fragment>
           ))}
         </div>
@@ -4947,14 +4950,16 @@ function getMovimientosCuenta(data, account) {
     }
   });
 
-  if (account === "Cashea" || account === "Chollo") {
+  // El pago que hacen Cashea/Chollo al liquidar lo financiado se cobra en bolívares a tasa BCV, y
+  // llega directo a la Cuenta Bancaria (no se queda "en Cashea"/"Chollo").
+  if (account === "Cuenta Bancaria") {
     data.sales.forEach((s) => {
-      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === account && s.liquidado) {
+      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && (s.plataforma === "Cashea" || s.plataforma === "Chollo") && s.liquidado) {
         movs.push({
           fecha: s.fechaLiquidacion || s.fecha,
           orden: s.id,
-          descripcion: `Pago recibido · financiamiento ${s.nombre || "de factura"} (${s.clienteNombre})`,
-          monto: Number(s.montoFinanciadoNeto) || 0,
+          descripcion: `Pago recibido de ${s.plataforma} (a tasa BCV) · financiamiento ${s.nombre || "de factura"} (${s.clienteNombre})`,
+          monto: (Number(s.montoFinanciadoNeto) || 0) * (Number(data.tasaBCV) || 1),
         });
       }
     });
