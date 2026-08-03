@@ -4965,6 +4965,27 @@ function getMovimientosCuenta(data, account) {
     });
   }
 
+  // Movimiento informativo en la propia cuenta de Cashea/Chollo: aunque el dinero ya entró a
+  // Cuenta Bancaria, aquí queda registrado qué teléfono se liquidó, cuánto era en divisas (neto),
+  // cuánto representó en Bs. al cobrarse a tasa BCV, y qué representan esos mismos Bs. en $ si se
+  // valoran a tasa interna (la diferencia entre ambas tasas es lo que se "pierde" al cobrar a BCV).
+  if (account === "Cashea" || account === "Chollo") {
+    data.sales.forEach((s) => {
+      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === account && s.liquidado) {
+        const netoUSD = Number(s.montoFinanciadoNeto) || 0;
+        const bsBCV = netoUSD * (Number(data.tasaBCV) || 1);
+        const usdInterna = bsBCV / (Number(data.tasaInterna) || 1);
+        const fmt2 = (n) => n.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        movs.push({
+          fecha: s.fechaLiquidacion || s.fecha,
+          orden: s.id,
+          descripcion: `Pago recibido · ${s.nombre || "Financiamiento de factura"} (${s.clienteNombre}) · Bs. ${fmt2(bsBCV)} a tasa BCV · equivalente $${fmt2(usdInterna)} a tasa interna`,
+          monto: netoUSD,
+        });
+      }
+    });
+  }
+
   (data.compras || []).forEach((c) => {
     if (METHOD_TO_ACCOUNT[c.metodo] === account) {
       movs.push({ fecha: c.fecha, orden: c.id, descripcion: `Compra inventario · ${c.producto}`, monto: -(Number(c.costoTotal) || 0) });
