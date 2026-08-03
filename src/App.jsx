@@ -1555,7 +1555,96 @@ export default function App() {
 }
 
 // ==================== DASHBOARD ====================
+const MES_LABEL = [
+  "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+];
+const labelMes = (key) => {
+  // key viene como "YYYY-MM"
+  if (!key || key === "s/f") return "Sin fecha";
+  const [y, m] = key.split("-");
+  const idx = Number(m) - 1;
+  return `${MES_LABEL[idx] || m} ${y}`;
+};
+
 function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, ingresosPorMetodoPago, PIE_COLORS, bcvSync, syncTasaBCV, setTab }) {
+  const [verLineasActivadas, setVerLineasActivadas] = useState(false);
+
+  // Comisiones por líneas activadas, agrupadas por mes calendario (01 al último día de cada mes) —
+  // se calcula solo de las ventas ya registradas, sin necesidad de "cerrar" nada manualmente: el mes
+  // en curso siempre muestra su total en vivo, y los meses anteriores quedan fijos porque ya no se
+  // les agregan más ventas.
+  const comisionesPorMes = useMemo(() => {
+    const byMonth = {};
+    data.sales
+      .filter((s) => s.tipo === "Línea Nueva")
+      .forEach((s) => {
+        const key = s.fecha ? s.fecha.slice(0, 7) : "s/f";
+        if (!byMonth[key]) byMonth[key] = { mes: key, cantidad: 0, comisiones: 0 };
+        byMonth[key].cantidad += 1;
+        byMonth[key].comisiones += Number(s.comision) || 0;
+      });
+    return Object.values(byMonth).sort((a, b) => b.mes.localeCompare(a.mes));
+  }, [data.sales]);
+
+  if (verLineasActivadas) {
+    const mesActualKey = todayISO().slice(0, 7);
+    const mesActual = comisionesPorMes.find((m) => m.mes === mesActualKey) || { cantidad: 0, comisiones: 0 };
+    return (
+      <>
+        <button className="btn btn-ghost btn-sm" onClick={() => setVerLineasActivadas(false)} style={{ marginBottom: 14 }}>
+          ← Volver al resumen
+        </button>
+        <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          <Card
+            icon={Wifi}
+            tone="primary"
+            label={`Líneas activadas · ${labelMes(mesActualKey)} (en curso)`}
+            value={mesActual.cantidad}
+            sub={`${money(mesActual.comisiones)} en comisiones este mes`}
+          />
+        </div>
+        <div className="panel">
+          <div className="panel-title">
+            <Wifi size={16} /> Comisiones por mes
+          </div>
+          <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 12 }}>
+            Cada mes va del 01 al último día de ese mes. El mes en curso se sigue actualizando con cada línea nueva que
+            factures; los meses ya terminados quedan fijos.
+          </div>
+          {comisionesPorMes.length === 0 ? (
+            <div className="empty-state">Todavía no hay líneas nuevas registradas.</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Mes</th>
+                  <th>Líneas activadas</th>
+                  <th>Comisiones acumuladas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {comisionesPorMes.map((m) => (
+                  <tr key={m.mes}>
+                    <td style={{ fontWeight: 600 }}>
+                      {labelMes(m.mes)}
+                      {m.mes === mesActualKey && (
+                        <span style={{ marginLeft: 8 }}>
+                          <Badge tone="warning">En curso</Badge>
+                        </span>
+                      )}
+                    </td>
+                    <td>{m.cantidad}</td>
+                    <td style={{ fontWeight: 700 }}>{money(m.comisiones)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <div className="tasa-bar" style={{ alignItems: "center" }}>
@@ -1576,7 +1665,14 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
         )}
       </div>
       <div className="stat-grid">
-        <Card icon={Wifi} tone="primary" label="Líneas nuevas activadas" value={metrics.countLineas} sub={`${money(metrics.totalComisiones)} en comisiones`} />
+        <Card
+          icon={Wifi}
+          tone="primary"
+          label="Líneas nuevas activadas"
+          value={metrics.countLineas}
+          sub={`${money(metrics.totalComisiones)} en comisiones · clic para ver por mes`}
+          onClick={() => setVerLineasActivadas(true)}
+        />
         <Card icon={TrendingUp} tone={metrics.gananciaLineas >= 0 ? "success" : "danger"} label="Ganancia líneas nuevas" value={money(metrics.gananciaLineas)} sub={`Gastos: ${money(metrics.totalGastosLineas)}`} />
         <Card icon={RefreshCw} tone={metrics.gananciaCambios >= 0 ? "success" : "danger"} label="Cambio/Recuperación de línea" value={metrics.countCambios} sub={`Ganancia: ${money(metrics.gananciaCambios)}`} />
         <Card icon={Package} tone="primary" label="Ganancia accesorios/repuestos" value={money(metrics.gananciaAccesorios)} sub={`${metrics.countAccesorios} ventas · ingresos ${money(metrics.ingresosAccesorios)}`} />
