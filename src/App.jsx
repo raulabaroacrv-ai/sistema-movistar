@@ -5248,18 +5248,14 @@ function Billetera({ data, setData, walletBalances }) {
             <div key={acc} onClick={() => setCuentaSeleccionada(acc)} style={{ cursor: "pointer" }}>
               <Card
                 icon={ACCOUNT_ICON[acc] || Wallet}
-                tone={bal < 0 ? "danger" : "primary"}
+                tone={esFinanciamiento ? (pendiente > 0.01 ? "warning" : "success") : bal < 0 ? "danger" : "primary"}
                 label={acc}
-                value={fmtAccountAmount(bal, currency)}
+                value={esFinanciamiento ? fmtAccountAmount(pendiente, "USD") : fmtAccountAmount(bal, currency)}
                 sub={
                   esFinanciamiento ? (
                     <>
-                      Acreditado al vender (neto) · clic para ver detalle
-                      {pendiente > 0.01 && (
-                        <div style={{ marginTop: 4, color: "var(--color-warning, #b45309)", fontWeight: 800 }}>
-                          Te deben: {fmtAccountAmount(pendiente, "USD")} pendiente por cobrar
-                        </div>
-                      )}
+                      {pendiente > 0.01 ? "Pendiente por cobrar" : "Sin pendientes por cobrar"} · clic para ver detalle
+                      <div style={{ marginTop: 4 }}>Saldo acumulado (neto): {fmtAccountAmount(bal, currency)}</div>
                     </>
                   ) : (
                     "Saldo acumulado · clic para ver detalle"
