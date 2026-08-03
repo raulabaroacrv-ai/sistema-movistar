@@ -5090,13 +5090,24 @@ function Billetera({ data, setData, walletBalances }) {
     const pendientesCuenta = esFinanciamiento
       ? data.sales.filter((s) => (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === acc && !s.liquidado)
       : [];
+    const pendienteTotalCuenta = pendientesCuenta.reduce((s, v) => s + (Number(v.montoFinanciadoNeto) || 0), 0);
     return (
       <>
         <button className="btn btn-ghost btn-sm" onClick={() => setCuentaSeleccionada(null)} style={{ marginBottom: 14 }}>
           ← Volver a la billetera
         </button>
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
-          <Card icon={Icon} tone={bal < 0 ? "danger" : "primary"} label={acc} value={fmtAccountAmount(bal, currency)} sub="Saldo acumulado" />
+          {esFinanciamiento ? (
+            <Card
+              icon={Icon}
+              tone={pendienteTotalCuenta > 0 ? "warning" : "success"}
+              label={acc}
+              value={fmtAccountAmount(pendienteTotalCuenta, "USD")}
+              sub="Pendiente por cobrar"
+            />
+          ) : (
+            <Card icon={Icon} tone={bal < 0 ? "danger" : "primary"} label={acc} value={fmtAccountAmount(bal, currency)} sub="Saldo acumulado" />
+          )}
         </div>
         {esFinanciamiento && (
           <div className="panel">
