@@ -5252,14 +5252,9 @@ function Billetera({ data, setData, walletBalances }) {
                 label={acc}
                 value={esFinanciamiento ? fmtAccountAmount(pendiente, "USD") : fmtAccountAmount(bal, currency)}
                 sub={
-                  esFinanciamiento ? (
-                    <>
-                      {pendiente > 0.01 ? "Pendiente por cobrar" : "Sin pendientes por cobrar"} · clic para ver detalle
-                      <div style={{ marginTop: 4 }}>Saldo acumulado (neto): {fmtAccountAmount(bal, currency)}</div>
-                    </>
-                  ) : (
-                    "Saldo acumulado · clic para ver detalle"
-                  )
+                  esFinanciamiento
+                    ? `${pendiente > 0.01 ? "Pendiente por cobrar" : "Sin pendientes por cobrar"} · clic para ver detalle`
+                    : "Saldo acumulado · clic para ver detalle"
                 }
               />
             </div>
