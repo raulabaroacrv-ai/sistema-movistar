@@ -951,6 +951,9 @@ export default function App() {
   const [bcvSync, setBcvSync] = useState({ status: "idle", fechaVigencia: null, lastCheck: null, error: null });
   const [dataSync, setDataSync] = useState({ status: supabaseConfigured ? "loading" : "local-only", lastSaved: null, error: null });
   const remoteUpdatedAtRef = useRef(null);
+  // Timestamp of the last local edit to `data`. Used to avoid the background refresh (below)
+  // clobbering an edit that's still being typed/about to be saved.
+  const lastLocalChangeRef = useRef(Date.now());
   const money = useCurrency(data.currency);
 
   // ---------- auth gate: require a logged-in Supabase user before showing/loading any data ----------
@@ -985,6 +988,42 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Normaliza un objeto "parsed" (venido de Supabase o de localStorage) rellenando campos que
+  // pudieran faltar en datos antiguos, y lo aplica al estado. Se usa tanto en la carga inicial
+  // como en el refresco periódico en segundo plano (más abajo), para no duplicar esta lógica.
+  const applyRemoteSnapshot = (parsed) => {
+    if (!parsed) {
+      setData((d) => ({ ...d, planes: d.planes && d.planes.length > 0 ? d.planes : DEFAULT_PLANES }));
+      return;
+    }
+    const planes = parsed.planes && parsed.planes.length > 0 ? parsed.planes : DEFAULT_PLANES;
+    const tasaInterna = parsed.tasaInterna || parsed.tasaCambio || 633.3644;
+    const tasaBCV = parsed.tasaBCV || parsed.tasaCambio || 633.3644;
+    const compras = parsed.compras || [];
+    const ordenesCompra = parsed.ordenesCompra || [];
+    const cierresCaja = parsed.cierresCaja || [];
+    const gastosGenerales = parsed.gastosGenerales || [];
+    const saldosIniciales = parsed.saldosIniciales || {};
+    const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
+    const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
+    const cholloPct = parsed.cholloPct != null ? parsed.cholloPct : 17;
+    setData((d) => ({
+      ...d,
+      ...parsed,
+      planes,
+      tasaInterna,
+      tasaBCV,
+      compras,
+      ordenesCompra,
+      cierresCaja,
+      gastosGenerales,
+      saldosIniciales,
+      transferenciasOpercoll,
+      ultimoNumeroFactura,
+      cholloPct,
+    }));
+  };
+
   // ---------- load on mount: Supabase (cloud, source of truth) first, localStorage as fallback ----------
   useEffect(() => {
     (async () => {
@@ -1008,36 +1047,7 @@ export default function App() {
           console.error("Error leyendo copia local", e);
         }
       }
-      if (parsed) {
-        const planes = parsed.planes && parsed.planes.length > 0 ? parsed.planes : DEFAULT_PLANES;
-        const tasaInterna = parsed.tasaInterna || parsed.tasaCambio || 633.3644;
-        const tasaBCV = parsed.tasaBCV || parsed.tasaCambio || 633.3644;
-        const compras = parsed.compras || [];
-        const ordenesCompra = parsed.ordenesCompra || [];
-        const cierresCaja = parsed.cierresCaja || [];
-        const gastosGenerales = parsed.gastosGenerales || [];
-        const saldosIniciales = parsed.saldosIniciales || {};
-        const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
-        const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
-        const cholloPct = parsed.cholloPct != null ? parsed.cholloPct : 17;
-        setData((d) => ({
-          ...d,
-          ...parsed,
-          planes,
-          tasaInterna,
-          tasaBCV,
-          compras,
-          ordenesCompra,
-          cierresCaja,
-          gastosGenerales,
-          saldosIniciales,
-          transferenciasOpercoll,
-          ultimoNumeroFactura,
-          cholloPct,
-        }));
-      } else {
-        setData((d) => ({ ...d, planes: DEFAULT_PLANES }));
-      }
+      applyRemoteSnapshot(parsed);
       setDataSync((s) => ({ ...s, status: supabaseConfigured ? "ok" : "local-only" }));
       setLoaded(true);
     })();
@@ -1046,6 +1056,7 @@ export default function App() {
   // ---------- save on every change: localStorage immediately (instant, offline-safe), Supabase debounced (cloud sync) ----------
   useEffect(() => {
     if (!loaded) return;
+    lastLocalChangeRef.current = Date.now();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (e) {
@@ -1076,6 +1087,30 @@ export default function App() {
     }, 800);
     return () => clearTimeout(timeout);
   }, [data, loaded]);
+
+  // ---------- background refresh: pick up changes made on OTHER devices/tabs without a manual reload ----------
+  // Antes, una pestaña que se dejaba abierta (por ejemplo en otra PC) sólo leía la nube UNA vez al
+  // cargar la página, y nunca más — así que un cierre de caja hecho en otra PC podía tardar horas
+  // en verse ahí, o no verse hasta recargar manualmente. Esto revisa la nube cada 45s y, si hay
+  // datos más nuevos y no hay una edición local en curso, los aplica automáticamente.
+  useEffect(() => {
+    if (!supabaseConfigured || !loaded) return;
+    const interval = setInterval(async () => {
+      if (dataSync.status === "saving") return; // hay un guardado local en curso, no lo pises
+      if (Date.now() - lastLocalChangeRef.current < 5000) return; // edición local muy reciente, espera a que se guarde
+      try {
+        const remote = await loadRemoteData();
+        if (remote && remote.updatedAt && remote.updatedAt !== remoteUpdatedAtRef.current) {
+          remoteUpdatedAtRef.current = remote.updatedAt;
+          applyRemoteSnapshot(remote.data);
+          setDataSync({ status: "ok", lastSaved: new Date().toISOString(), error: null });
+        }
+      } catch (e) {
+        console.error("No se pudo revisar actualizaciones en la nube", e);
+      }
+    }, 45000);
+    return () => clearInterval(interval);
+  }, [loaded, dataSync.status]);
 
   // ---------- derived metrics ----------
   const metrics = useMemo(() => {
