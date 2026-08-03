@@ -954,6 +954,13 @@ export default function App() {
   // Timestamp of the last local edit to `data`. Used to avoid the background refresh (below)
   // clobbering an edit that's still being typed/about to be saved.
   const lastLocalChangeRef = useRef(Date.now());
+  // Cuando `data` cambia porque acabamos de RECIBIR una foto de la nube (carga inicial o el
+  // refresco en segundo plano) — no porque el usuario editó algo — este flag evita que el efecto
+  // de guardado la vuelva a mandar a Supabase. Antes, CUALQUIER carga de página volvía a escribir
+  // en la nube aunque nada hubiera cambiado, lo cual podía chocar (conflicto) con un guardado real
+  // que otra pestaña/dispositivo estuviera haciendo en ese mismo instante — y esa venta real se
+  // perdía si el usuario, al ver el aviso de conflicto, le daba "Recargar".
+  const skipNextSaveRef = useRef(false);
   const money = useCurrency(data.currency);
 
   // ---------- auth gate: require a logged-in Supabase user before showing/loading any data ----------
@@ -992,6 +999,7 @@ export default function App() {
   // pudieran faltar en datos antiguos, y lo aplica al estado. Se usa tanto en la carga inicial
   // como en el refresco periódico en segundo plano (más abajo), para no duplicar esta lógica.
   const applyRemoteSnapshot = (parsed) => {
+    skipNextSaveRef.current = true;
     if (!parsed) {
       setData((d) => ({ ...d, planes: d.planes && d.planes.length > 0 ? d.planes : DEFAULT_PLANES }));
       return;
@@ -1056,12 +1064,20 @@ export default function App() {
   // ---------- save on every change: localStorage immediately (instant, offline-safe), Supabase debounced (cloud sync) ----------
   useEffect(() => {
     if (!loaded) return;
-    lastLocalChangeRef.current = Date.now();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (e) {
       console.error("Error guardando copia local", e);
     }
+    if (skipNextSaveRef.current) {
+      // Este cambio de `data` vino de aplicar una foto recién traída de la nube (carga inicial o
+      // refresco en segundo plano), no de una edición real del usuario. No hay nada nuevo que
+      // mandar de vuelta — reenviarlo solo arriesgaría chocar con un guardado real que otra
+      // pestaña/dispositivo esté haciendo justo en ese momento.
+      skipNextSaveRef.current = false;
+      return;
+    }
+    lastLocalChangeRef.current = Date.now();
     if (!supabaseConfigured) return;
     setDataSync((s) => ({ ...s, status: "saving" }));
     const timeout = setTimeout(async () => {
