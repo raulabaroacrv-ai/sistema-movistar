@@ -1091,12 +1091,15 @@ export default function App() {
   // ---------- background refresh: pick up changes made on OTHER devices/tabs without a manual reload ----------
   // Antes, una pestaña que se dejaba abierta (por ejemplo en otra PC) sólo leía la nube UNA vez al
   // cargar la página, y nunca más — así que un cierre de caja hecho en otra PC podía tardar horas
-  // en verse ahí, o no verse hasta recargar manualmente. Esto revisa la nube cada 45s y, si hay
-  // datos más nuevos y no hay una edición local en curso, los aplica automáticamente.
+  // en verse ahí, o no verse hasta recargar manualmente. Esto revisa la nube cada 45s, pero SOLO
+  // aplica lo que encuentra cuando dataSync.status === "ok": es decir, cuando ya sabemos con
+  // certeza que no hay ningún cambio local pendiente de guardar ni ningún guardado fallido/en
+  // conflicto. Si hay algo pendiente ("saving", "error" o "conflict"), no toca nada — así nunca se
+  // pisa una venta u otro cambio que todavía no se confirmó en la nube.
   useEffect(() => {
     if (!supabaseConfigured || !loaded) return;
     const interval = setInterval(async () => {
-      if (dataSync.status === "saving") return; // hay un guardado local en curso, no lo pises
+      if (dataSync.status !== "ok") return; // solo si local y nube ya coinciden con certeza
       if (Date.now() - lastLocalChangeRef.current < 5000) return; // edición local muy reciente, espera a que se guarde
       try {
         const remote = await loadRemoteData();
