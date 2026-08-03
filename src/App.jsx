@@ -1172,17 +1172,14 @@ export default function App() {
     // Money in: Cashea/Chollo pay out the financed amount (net of their commission) about a
     // week after the sale, once you mark it as received — not at the moment you sell it. This
     // applies both to phones financed on credit and to any other product financed through Cashea
-    // directly from the cart (tipo "Financiamiento Cashea"). Ese pago llega por transferencia
-    // directo a la Cuenta Bancaria — Cashea/Chollo ya no acumulan un saldo propio con este dinero,
-    // así que su tarjeta en Billetera puede mostrar solo lo que queda pendiente por cobrar, y al
-    // marcarlo recibido el monto se resta de "pendiente" y aparece reflejado en Cuenta Bancaria.
+    // directly from the cart (tipo "Financiamiento Cashea").
     data.sales.forEach((s) => {
       if (
         (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") &&
         (s.plataforma === "Cashea" || s.plataforma === "Chollo") &&
         s.liquidado
       ) {
-        balances["Cuenta Bancaria"] += (Number(s.montoFinanciadoNeto) || 0) * (Number(data.tasaInterna) || 1);
+        balances[s.plataforma] += Number(s.montoFinanciadoNeto) || 0;
       }
     });
 
@@ -4628,15 +4625,14 @@ function Creditos({ data, setData, money }) {
         Los créditos se crean automáticamente al facturar una venta de teléfono a crédito, o cualquier factura pagada con
         Cashea (línea nueva, cambio de línea, accesorios o repuestos), en la pestaña Ventas. Cashea y Chollo suelen pagarte
         el monto financiado (neto de su comisión) alrededor de una semana después de la venta — hasta que lo marques como
-        recibido, se muestra como acumulado pendiente y no entra a tu Billetera. Al marcarlo recibido, ese monto se
-        acredita directo a Cuenta Bancaria (así es como en la práctica llega el pago).
+        recibido, se muestra como acumulado pendiente y no entra a tu Billetera.
       </div>
       {Object.keys(porPlataforma).length > 0 && (
         <div className="stat-grid" style={{ marginBottom: 16 }}>
           {Object.entries(porPlataforma).map(([plat, montos]) => (
             <React.Fragment key={plat}>
               <Card icon={RefreshCw} tone={montos.pendiente > 0 ? "warning" : "success"} label={`Pendiente de ${plat} (facturado)`} value={money(montos.pendiente)} sub="Aún no acreditado a tu Billetera" />
-              <Card icon={Wallet} tone="success" label={`Ya recibido de ${plat}`} value={money(montos.recibido)} sub="Acreditado a Cuenta Bancaria" />
+              <Card icon={Wallet} tone="success" label={`Ya recibido de ${plat}`} value={money(montos.recibido)} sub="En tu Billetera" />
             </React.Fragment>
           ))}
         </div>
@@ -4951,16 +4947,14 @@ function getMovimientosCuenta(data, account) {
     }
   });
 
-  // El pago que hacen Cashea/Chollo al liquidar lo financiado llega por transferencia directo a
-  // la Cuenta Bancaria (no se queda "en Cashea"), así que ese movimiento aparece ahí.
-  if (account === "Cuenta Bancaria") {
+  if (account === "Cashea" || account === "Chollo") {
     data.sales.forEach((s) => {
-      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && (s.plataforma === "Cashea" || s.plataforma === "Chollo") && s.liquidado) {
+      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === account && s.liquidado) {
         movs.push({
           fecha: s.fechaLiquidacion || s.fecha,
           orden: s.id,
-          descripcion: `Pago recibido de ${s.plataforma} · financiamiento ${s.nombre || "de factura"} (${s.clienteNombre})`,
-          monto: (Number(s.montoFinanciadoNeto) || 0) * (Number(data.tasaInterna) || 1),
+          descripcion: `Pago recibido · financiamiento ${s.nombre || "de factura"} (${s.clienteNombre})`,
+          monto: Number(s.montoFinanciadoNeto) || 0,
         });
       }
     });
@@ -5199,13 +5193,11 @@ function Billetera({ data, setData, walletBalances }) {
                 sub={
                   esFinanciamiento ? (
                     <>
-                      Saldo por pagos directos · clic para ver detalle
-                      {pendiente > 0.01 ? (
+                      Acreditado al vender (neto) · clic para ver detalle
+                      {pendiente > 0.01 && (
                         <div style={{ marginTop: 4, color: "var(--color-warning, #b45309)", fontWeight: 800 }}>
-                          Te deben: {fmtAccountAmount(pendiente, "USD")} pendiente — al cobrarlo pasa a Cuenta Bancaria
+                          Te deben: {fmtAccountAmount(pendiente, "USD")} pendiente por cobrar
                         </div>
-                      ) : (
-                        <div style={{ marginTop: 4, color: "var(--color-success)", fontWeight: 700 }}>Sin pendientes por cobrar</div>
                       )}
                     </>
                   ) : (
