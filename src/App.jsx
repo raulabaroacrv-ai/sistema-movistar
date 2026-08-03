@@ -81,6 +81,11 @@ const ACCOUNT_CURRENCY = {
 // que el cliente elija — es un saldo prepago que el negocio le transfiere directamente (con un 5%
 // de bono sobre lo transferido), y que se consume automáticamente con cada recarga de Línea Nueva.
 const OPERCOLL_BONO_PCT = 5;
+// Cuentas de efectivo "libre" que se pueden mover entre sí o usar para comprar/vender divisas —
+// se excluyen Cashea/Chollo (saldo pendiente por cobrar de un tercero, no dinero disponible ya) y
+// Opercoll (tiene su propio flujo de transferencia con bono, más arriba).
+const BS_ACCOUNTS = ["Cuenta Bancaria", "Punto de Venta", "Efectivo"];
+const USD_ACCOUNTS = ["Zelle", "Binance", "$ Efectivo"];
 const fmtAccountAmount = (n, currency) => {
   const val = (Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return currency === "USD" ? `$${val}` : `Bs. ${val}`;
@@ -943,6 +948,8 @@ export default function App() {
     gastosGenerales: [],
     saldosIniciales: {},
     transferenciasOpercoll: [],
+    transferenciasCuentas: [],
+    comprasDivisas: [],
     ultimoNumeroFactura: 0,
     cholloPct: 17,
   });
@@ -1013,6 +1020,8 @@ export default function App() {
     const gastosGenerales = parsed.gastosGenerales || [];
     const saldosIniciales = parsed.saldosIniciales || {};
     const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
+    const transferenciasCuentas = parsed.transferenciasCuentas || [];
+    const comprasDivisas = parsed.comprasDivisas || [];
     const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
     const cholloPct = parsed.cholloPct != null ? parsed.cholloPct : 17;
     setData((d) => ({
@@ -1027,6 +1036,8 @@ export default function App() {
       gastosGenerales,
       saldosIniciales,
       transferenciasOpercoll,
+      transferenciasCuentas,
+      comprasDivisas,
       ultimoNumeroFactura,
       cholloPct,
     }));
@@ -1280,6 +1291,22 @@ export default function App() {
       });
     });
 
+    // Transferencias entre cuentas propias (mismo tipo de moneda): sale de la cuenta origen,
+    // entra intacto a la cuenta destino — no hay conversión, es el mismo dinero moviéndose.
+    (data.transferenciasCuentas || []).forEach((t) => {
+      balances[t.cuentaOrigen] -= Number(t.monto) || 0;
+      balances[t.cuentaDestino] += Number(t.monto) || 0;
+    });
+
+    // Compra de divisas: sale el monto en Bs. de la cuenta origen (Cuenta Bancaria, Punto de
+    // Venta o Efectivo) y entra el monto en $ comprado a la cuenta destino ($ Efectivo, Binance o
+    // Zelle). Ambos montos se guardan tal cual se compraron, sin recalcularlos con la tasa del
+    // día — el precio real de una compra de divisas puede no coincidir con la tasa interna/BCV.
+    (data.comprasDivisas || []).forEach((c) => {
+      balances[c.cuentaOrigen] -= Number(c.montoBs) || 0;
+      balances[c.cuentaDestino] += Number(c.montoUSD) || 0;
+    });
+
     return balances;
   }, [
     data.sales,
@@ -1289,6 +1316,8 @@ export default function App() {
     data.gastosGenerales,
     data.saldosIniciales,
     data.transferenciasOpercoll,
+    data.transferenciasCuentas,
+    data.comprasDivisas,
     data.currency,
     data.tasaBCV,
   ]);
@@ -5054,6 +5083,40 @@ function getMovimientosCuenta(data, account) {
     });
   });
 
+  // Transferencias entre cuentas propias: sale de una y entra intacto a la otra.
+  (data.transferenciasCuentas || []).forEach((t) => {
+    if (t.cuentaOrigen === account) {
+      movs.push({ fecha: t.fecha, orden: t.id, descripcion: `Transferencia a ${t.cuentaDestino}`, monto: -(Number(t.monto) || 0) });
+    }
+    if (t.cuentaDestino === account) {
+      movs.push({ fecha: t.fecha, orden: t.id, descripcion: `Transferencia desde ${t.cuentaOrigen}`, monto: Number(t.monto) || 0 });
+    }
+  });
+
+  // Compra de divisas: sale el monto en Bs. de la cuenta origen, entra el monto en $ comprado a
+  // la cuenta destino. Se muestra la tasa implícita (Bs. ÷ $) de esa compra en particular.
+  (data.comprasDivisas || []).forEach((c) => {
+    const tasaImplicita = Number(c.montoUSD) > 0 ? Number(c.montoBs) / Number(c.montoUSD) : 0;
+    if (c.cuentaOrigen === account) {
+      movs.push({
+        fecha: c.fecha,
+        orden: c.id,
+        descripcion: `Compra de divisas → ${c.cuentaDestino}`,
+        monto: -(Number(c.montoBs) || 0),
+        compraDivisa: { montoUSD: Number(c.montoUSD) || 0, tasaImplicita },
+      });
+    }
+    if (c.cuentaDestino === account) {
+      movs.push({
+        fecha: c.fecha,
+        orden: c.id,
+        descripcion: `Compra de divisas ← ${c.cuentaOrigen}`,
+        monto: Number(c.montoUSD) || 0,
+        compraDivisa: { montoBs: Number(c.montoBs) || 0, tasaImplicita },
+      });
+    }
+  });
+
   // Opercoll: transferencias que salen de la cuenta de origen, entran a Opercoll con su 5% de
   // bono, y se consumen automáticamente con cada recarga de Línea Nueva.
   (data.transferenciasOpercoll || []).forEach((t) => {
@@ -5091,6 +5154,19 @@ function Billetera({ data, setData, walletBalances }) {
   const [saldosForm, setSaldosForm] = useState({});
   const [montoOpercoll, setMontoOpercoll] = useState("");
   const [metodoOpercoll, setMetodoOpercoll] = useState("Efectivo");
+
+  // Transferencia entre cuentas propias (mismo tipo de moneda, ej. Punto de Venta → Cuenta
+  // Bancaria, o $ Efectivo → Binance).
+  const [montoTransferCuenta, setMontoTransferCuenta] = useState("");
+  const [origenTransferCuenta, setOrigenTransferCuenta] = useState("Punto de Venta");
+  const [destinoTransferCuenta, setDestinoTransferCuenta] = useState("Cuenta Bancaria");
+
+  // Compra de divisas: convierte Bs. de una cuenta en bolívares a $ en una cuenta en dólares.
+  const [fechaCompraDivisa, setFechaCompraDivisa] = useState(todayISO());
+  const [montoUSDCompra, setMontoUSDCompra] = useState("");
+  const [montoBsCompra, setMontoBsCompra] = useState("");
+  const [origenCompraDivisa, setOrigenCompraDivisa] = useState("Cuenta Bancaria");
+  const [destinoCompraDivisa, setDestinoCompraDivisa] = useState("$ Efectivo");
 
   // Cashea y Chollo pagan el monto financiado (neto de su comisión) días después de la venta, no al
   // momento de facturar — hasta que se marca como recibido en Créditos, ese dinero no entra a la
@@ -5132,6 +5208,58 @@ function Billetera({ data, setData, walletBalances }) {
       ],
     }));
     setMontoOpercoll("");
+  };
+
+  // Transferencia entre cuentas propias.
+  const monedasCompatiblesTransfer = origenTransferCuenta && destinoTransferCuenta && ACCOUNT_CURRENCY[origenTransferCuenta] === ACCOUNT_CURRENCY[destinoTransferCuenta];
+  const disponibleTransferCuenta = walletBalances[origenTransferCuenta] || 0;
+  const montoTransferCuentaNum = Number(montoTransferCuenta) || 0;
+  const excedeSaldoTransferCuenta = montoTransferCuentaNum > disponibleTransferCuenta + 0.01;
+  const puedeTransferirCuenta =
+    montoTransferCuentaNum > 0 &&
+    !excedeSaldoTransferCuenta &&
+    origenTransferCuenta !== destinoTransferCuenta &&
+    monedasCompatiblesTransfer;
+
+  const transferirEntreCuentas = () => {
+    if (!puedeTransferirCuenta) return;
+    setData((d) => ({
+      ...d,
+      transferenciasCuentas: [
+        { id: uid(), fecha: todayISO(), cuentaOrigen: origenTransferCuenta, cuentaDestino: destinoTransferCuenta, monto: montoTransferCuentaNum },
+        ...(d.transferenciasCuentas || []),
+      ],
+    }));
+    setMontoTransferCuenta("");
+  };
+
+  // Compra de divisas (Bs. → $).
+  const disponibleCompraDivisa = walletBalances[origenCompraDivisa] || 0;
+  const montoUSDCompraNum = Number(montoUSDCompra) || 0;
+  const montoBsCompraNum = Number(montoBsCompra) || 0;
+  const excedeSaldoCompraDivisa = montoBsCompraNum > disponibleCompraDivisa + 0.01;
+  const tasaImplicitaCompra = montoUSDCompraNum > 0 ? montoBsCompraNum / montoUSDCompraNum : 0;
+  const puedeComprarDivisa = montoUSDCompraNum > 0 && montoBsCompraNum > 0 && !excedeSaldoCompraDivisa;
+
+  const registrarCompraDivisa = () => {
+    if (!puedeComprarDivisa) return;
+    setData((d) => ({
+      ...d,
+      comprasDivisas: [
+        {
+          id: uid(),
+          fecha: fechaCompraDivisa || todayISO(),
+          montoUSD: montoUSDCompraNum,
+          montoBs: montoBsCompraNum,
+          cuentaOrigen: origenCompraDivisa,
+          cuentaDestino: destinoCompraDivisa,
+        },
+        ...(d.comprasDivisas || []),
+      ],
+    }));
+    setMontoUSDCompra("");
+    setMontoBsCompra("");
+    setFechaCompraDivisa(todayISO());
   };
 
   const abrirEdicionSaldos = () => {
@@ -5254,6 +5382,23 @@ function Billetera({ data, setData, walletBalances }) {
                           </Badge>
                           <Badge tone="warning">
                             ≈ ${m.liquidacion.usdInterna.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} a tasa interna
+                          </Badge>
+                        </div>
+                      )}
+                      {m.compraDivisa && (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
+                          {m.compraDivisa.montoUSD != null && (
+                            <Badge tone="neutral">
+                              ${m.compraDivisa.montoUSD.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </Badge>
+                          )}
+                          {m.compraDivisa.montoBs != null && (
+                            <Badge tone="neutral">
+                              Bs. {m.compraDivisa.montoBs.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </Badge>
+                          )}
+                          <Badge tone="warning">
+                            Tasa: {m.compraDivisa.tasaImplicita.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </Badge>
                         </div>
                       )}
@@ -5399,6 +5544,167 @@ function Billetera({ data, setData, walletBalances }) {
         <button className="btn btn-primary" disabled={!puedeTransferirOpercoll} onClick={transferirAOpercoll}>
           <Check size={14} /> Transferir a Opercoll
         </button>
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">
+          <RefreshCw size={16} /> Transferencia entre cuentas
+        </div>
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 12 }}>
+          Mueve dinero entre tus propias cuentas del mismo tipo de moneda — por ejemplo, de Punto de Venta a Cuenta
+          Bancaria, o de $ Efectivo a Binance. El monto sale de una y entra intacto a la otra, sin conversión.
+        </div>
+        <div className="form-grid">
+          <div className="field">
+            <label>Monto a transferir ({ACCOUNT_CURRENCY[origenTransferCuenta] === "USD" ? "$" : "Bs."})</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: "var(--color-text-muted)", minWidth: 20 }}>
+                {ACCOUNT_CURRENCY[origenTransferCuenta] === "USD" ? "$" : "Bs."}
+              </span>
+              <input type="number" value={montoTransferCuenta} onChange={(e) => setMontoTransferCuenta(e.target.value)} placeholder="0.00" />
+            </div>
+          </div>
+          <div className="field">
+            <label>Cuenta de origen</label>
+            <select value={origenTransferCuenta} onChange={(e) => setOrigenTransferCuenta(e.target.value)}>
+              {[...BS_ACCOUNTS, ...USD_ACCOUNTS].map((acc) => (
+                <option key={acc} value={acc}>
+                  {acc}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Cuenta de destino</label>
+            <select value={destinoTransferCuenta} onChange={(e) => setDestinoTransferCuenta(e.target.value)}>
+              {[...BS_ACCOUNTS, ...USD_ACCOUNTS]
+                .filter((acc) => acc !== origenTransferCuenta && ACCOUNT_CURRENCY[acc] === ACCOUNT_CURRENCY[origenTransferCuenta])
+                .map((acc) => (
+                  <option key={acc} value={acc}>
+                    {acc}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 10 }}>
+          Disponible en {origenTransferCuenta}: {fmtAccountAmount(disponibleTransferCuenta, ACCOUNT_CURRENCY[origenTransferCuenta])}
+        </div>
+        {excedeSaldoTransferCuenta && (
+          <div style={{ fontSize: 11.5, color: "var(--color-danger)", fontWeight: 700, marginBottom: 10 }}>
+            Saldo insuficiente en {origenTransferCuenta}: disponible{" "}
+            {fmtAccountAmount(disponibleTransferCuenta, ACCOUNT_CURRENCY[origenTransferCuenta])}, intentas transferir{" "}
+            {fmtAccountAmount(montoTransferCuentaNum, ACCOUNT_CURRENCY[origenTransferCuenta])}.
+          </div>
+        )}
+        <button className="btn btn-primary" disabled={!puedeTransferirCuenta} onClick={transferirEntreCuentas}>
+          <Check size={14} /> Transferir
+        </button>
+        {(data.transferenciasCuentas || []).length > 0 && (
+          <table style={{ marginTop: 16 }}>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>De</th>
+                <th>A</th>
+                <th>Monto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.transferenciasCuentas || []).slice(0, 8).map((t) => (
+                <tr key={t.id}>
+                  <td style={{ whiteSpace: "nowrap" }}>{fmtDate(t.fecha)}</td>
+                  <td>{t.cuentaOrigen}</td>
+                  <td>{t.cuentaDestino}</td>
+                  <td style={{ fontWeight: 700 }}>{fmtAccountAmount(t.monto, ACCOUNT_CURRENCY[t.cuentaOrigen])}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">
+          <RefreshCw size={16} /> Compra de divisas
+        </div>
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 12 }}>
+          Registra cuando compras dólares con bolívares. Anota los dos montos tal cual los compraste (el monto en $ y lo
+          que pagaste en Bs.) — la tasa de esa compra puede no ser igual a la tasa interna o BCV del día.
+        </div>
+        <div className="form-grid">
+          <div className="field">
+            <label>Fecha</label>
+            <input type="date" value={fechaCompraDivisa} onChange={(e) => setFechaCompraDivisa(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Monto comprado ($)</label>
+            <input type="number" value={montoUSDCompra} onChange={(e) => setMontoUSDCompra(e.target.value)} placeholder="0.00" />
+          </div>
+          <div className="field">
+            <label>Monto pagado (Bs.)</label>
+            <input type="number" value={montoBsCompra} onChange={(e) => setMontoBsCompra(e.target.value)} placeholder="0.00" />
+          </div>
+          <div className="field">
+            <label>Compré en (cuenta destino)</label>
+            <select value={destinoCompraDivisa} onChange={(e) => setDestinoCompraDivisa(e.target.value)}>
+              {USD_ACCOUNTS.map((acc) => (
+                <option key={acc} value={acc}>
+                  {acc}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Pagado desde (cuenta origen)</label>
+            <select value={origenCompraDivisa} onChange={(e) => setOrigenCompraDivisa(e.target.value)}>
+              {BS_ACCOUNTS.map((acc) => (
+                <option key={acc} value={acc}>
+                  {acc}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 10 }}>
+          Disponible en {origenCompraDivisa}: {fmtAccountAmount(disponibleCompraDivisa, "VES")}
+          {tasaImplicitaCompra > 0 && (
+            <> · Tasa de esta compra: {tasaImplicitaCompra.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Bs./$</>
+          )}
+        </div>
+        {excedeSaldoCompraDivisa && (
+          <div style={{ fontSize: 11.5, color: "var(--color-danger)", fontWeight: 700, marginBottom: 10 }}>
+            Saldo insuficiente en {origenCompraDivisa}: disponible {fmtAccountAmount(disponibleCompraDivisa, "VES")}, intentas pagar{" "}
+            {fmtAccountAmount(montoBsCompraNum, "VES")}.
+          </div>
+        )}
+        <button className="btn btn-primary" disabled={!puedeComprarDivisa} onClick={registrarCompraDivisa}>
+          <Check size={14} /> Registrar compra
+        </button>
+        {(data.comprasDivisas || []).length > 0 && (
+          <table style={{ marginTop: 16 }}>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Monto $</th>
+                <th>Monto Bs.</th>
+                <th>Compré en</th>
+                <th>Desde</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.comprasDivisas || []).slice(0, 8).map((c) => (
+                <tr key={c.id}>
+                  <td style={{ whiteSpace: "nowrap" }}>{fmtDate(c.fecha)}</td>
+                  <td style={{ fontWeight: 700 }}>{fmtAccountAmount(c.montoUSD, "USD")}</td>
+                  <td>{fmtAccountAmount(c.montoBs, "VES")}</td>
+                  <td>{c.cuentaDestino}</td>
+                  <td>{c.cuentaOrigen}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <div className="panel">
