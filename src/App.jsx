@@ -5012,6 +5012,20 @@ function Billetera({ data, setData, walletBalances }) {
   const [montoOpercoll, setMontoOpercoll] = useState("");
   const [metodoOpercoll, setMetodoOpercoll] = useState("Efectivo");
 
+  // Cashea y Chollo pagan el monto financiado (neto de su comisión) días después de la venta, no al
+  // momento de facturar — hasta que se marca como recibido en Créditos, ese dinero no entra a la
+  // Billetera. Se calcula aquí lo mismo que en Créditos ("pendiente") para que también se vea de
+  // entrada en el panel principal, sin tener que ir a buscarlo a otra pestaña.
+  const pendienteFinanciamiento = useMemo(() => {
+    const result = {};
+    data.sales.forEach((s) => {
+      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && (s.plataforma === "Cashea" || s.plataforma === "Chollo") && !s.liquidado) {
+        result[s.plataforma] = (result[s.plataforma] || 0) + (Number(s.montoFinanciadoNeto) || 0);
+      }
+    });
+    return result;
+  }, [data.sales]);
+
   const cuentaOrigenOpercoll = METHOD_TO_ACCOUNT[metodoOpercoll];
   const disponibleOpercoll = walletBalances[cuentaOrigenOpercoll] || 0;
   const montoOpercollNum = Number(montoOpercoll) || 0;
@@ -5167,6 +5181,8 @@ function Billetera({ data, setData, walletBalances }) {
         {WALLET_ACCOUNTS.map((acc) => {
           const bal = walletBalances[acc] || 0;
           const currency = ACCOUNT_CURRENCY[acc];
+          const esFinanciamiento = acc === "Cashea" || acc === "Chollo";
+          const pendiente = pendienteFinanciamiento[acc] || 0;
           return (
             <div key={acc} onClick={() => setCuentaSeleccionada(acc)} style={{ cursor: "pointer" }}>
               <Card
@@ -5174,7 +5190,20 @@ function Billetera({ data, setData, walletBalances }) {
                 tone={bal < 0 ? "danger" : "primary"}
                 label={acc}
                 value={fmtAccountAmount(bal, currency)}
-                sub={acc === "Cashea" || acc === "Chollo" ? "Acreditado al vender (neto) · clic para ver detalle" : "Saldo acumulado · clic para ver detalle"}
+                sub={
+                  esFinanciamiento ? (
+                    <>
+                      Acreditado al vender (neto) · clic para ver detalle
+                      {pendiente > 0.01 && (
+                        <div style={{ marginTop: 4, color: "var(--color-warning, #b45309)", fontWeight: 800 }}>
+                          Te deben: {fmtAccountAmount(pendiente, "USD")} pendiente por cobrar
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    "Saldo acumulado · clic para ver detalle"
+                  )
+                }
               />
             </div>
           );
