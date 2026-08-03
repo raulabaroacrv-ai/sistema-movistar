@@ -4975,12 +4975,12 @@ function getMovimientosCuenta(data, account) {
         const netoUSD = Number(s.montoFinanciadoNeto) || 0;
         const bsBCV = netoUSD * (Number(data.tasaBCV) || 1);
         const usdInterna = bsBCV / (Number(data.tasaInterna) || 1);
-        const fmt2 = (n) => n.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         movs.push({
           fecha: s.fechaLiquidacion || s.fecha,
           orden: s.id,
-          descripcion: `Pago recibido · ${s.nombre || "Financiamiento de factura"} (${s.clienteNombre}) · Bs. ${fmt2(bsBCV)} a tasa BCV · equivalente $${fmt2(usdInterna)} a tasa interna`,
+          descripcion: `${s.nombre || "Financiamiento de factura"} (${s.clienteNombre})`,
           monto: netoUSD,
+          liquidacion: { bsBCV, usdInterna },
         });
       }
     });
@@ -5190,9 +5190,21 @@ function Billetera({ data, setData, walletBalances }) {
               <tbody>
                 {movimientos.map((m, i) => (
                   <tr key={i}>
-                    <td>{fmtDate(m.fecha)}</td>
-                    <td>{m.descripcion}</td>
-                    <td style={{ fontWeight: 700, color: m.monto >= 0 ? "var(--color-success)" : "var(--color-danger)" }}>
+                    <td style={{ whiteSpace: "nowrap" }}>{fmtDate(m.fecha)}</td>
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{m.descripcion}</div>
+                      {m.liquidacion && (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
+                          <Badge tone="neutral">
+                            Bs. {m.liquidacion.bsBCV.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} a BCV
+                          </Badge>
+                          <Badge tone="warning">
+                            ≈ ${m.liquidacion.usdInterna.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} a tasa interna
+                          </Badge>
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ fontWeight: 700, color: m.monto >= 0 ? "var(--color-success)" : "var(--color-danger)", whiteSpace: "nowrap" }}>
                       {m.monto >= 0 ? "+" : "−"}
                       {fmtAccountAmount(Math.abs(m.monto), currency)}
                     </td>
