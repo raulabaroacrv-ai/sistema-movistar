@@ -29,6 +29,7 @@ import {
   Tag,
   Share2,
   Copy,
+  QrCode,
 } from "lucide-react";
 import {
   BarChart,
@@ -950,6 +951,7 @@ export default function App() {
     transferenciasOpercoll: [],
     transferenciasCuentas: [],
     comprasDivisas: [],
+    esims: [],
     ultimoNumeroFactura: 0,
     cholloPct: 17,
   });
@@ -1022,6 +1024,7 @@ export default function App() {
     const transferenciasOpercoll = parsed.transferenciasOpercoll || [];
     const transferenciasCuentas = parsed.transferenciasCuentas || [];
     const comprasDivisas = parsed.comprasDivisas || [];
+    const esims = parsed.esims || [];
     const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
     const cholloPct = parsed.cholloPct != null ? parsed.cholloPct : 17;
     setData((d) => ({
@@ -1038,6 +1041,7 @@ export default function App() {
       transferenciasOpercoll,
       transferenciasCuentas,
       comprasDivisas,
+      esims,
       ultimoNumeroFactura,
       cholloPct,
     }));
@@ -1470,6 +1474,7 @@ export default function App() {
           { id: "creditos", label: "Créditos", icon: Smartphone },
           { id: "gastos", label: "Gastos", icon: Receipt },
           { id: "billetera", label: "Billetera", icon: Wallet },
+          { id: "esim", label: "eSIM", icon: QrCode },
         ].map((item) => (
           <button key={item.id} className={`nav-item ${tab === item.id ? "active" : ""}`} onClick={() => setTab(item.id)}>
             <item.icon size={16} />
@@ -1505,6 +1510,7 @@ export default function App() {
                 creditos: "Créditos activos",
                 gastos: "Gastos consolidados",
                 billetera: "Billetera digital",
+                esim: "Códigos eSIM",
               }[tab]
             }
           </div>
@@ -1549,6 +1555,7 @@ export default function App() {
         {tab === "creditos" && <Creditos data={data} setData={setData} money={money} />}
         {tab === "gastos" && <GastosView data={data} setData={setData} money={money} gastosPorConcepto={gastosPorConcepto} PIE_COLORS={PIE_COLORS} walletBalances={walletBalances} />}
         {tab === "billetera" && <Billetera data={data} setData={setData} walletBalances={walletBalances} />}
+        {tab === "esim" && <EsimView data={data} setData={setData} />}
       </main>
     </div>
   );
@@ -5074,6 +5081,106 @@ function GastosView({ data, setData, money, gastosPorConcepto, PIE_COLORS, walle
                   <td>
                     <button className="link-btn" onClick={() => removeGasto(g.id)}>
                       Eliminar
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ==================== ESIM ====================
+
+function EsimView({ data, setData }) {
+  const [codigo, setCodigo] = useState("");
+  const [nota, setNota] = useState("");
+  const [copiadoId, setCopiadoId] = useState(null);
+
+  const puedeRegistrar = codigo.trim().length > 0;
+
+  const agregarEsim = () => {
+    if (!puedeRegistrar) return;
+    const registro = { id: uid(), fecha: todayISO(), codigo: codigo.trim(), nota: nota.trim() };
+    setData((d) => ({ ...d, esims: [registro, ...(d.esims || [])] }));
+    setCodigo("");
+    setNota("");
+  };
+
+  const removeEsim = (id) => setData((d) => ({ ...d, esims: (d.esims || []).filter((e) => e.id !== id) }));
+
+  const copiarCodigo = (item) => {
+    navigator.clipboard?.writeText(item.codigo).then(() => {
+      setCopiadoId(item.id);
+      setTimeout(() => setCopiadoId((c) => (c === item.id ? null : c)), 1500);
+    });
+  };
+
+  const esims = data.esims || [];
+
+  return (
+    <>
+      <div className="panel">
+        <div className="panel-title">
+          <Plus size={16} /> Registrar código eSIM
+        </div>
+        <div className="form-grid">
+          <div className="field">
+            <label>Código eSIM</label>
+            <input value={codigo} onChange={(e) => setCodigo(e.target.value)} placeholder="Código / QR / número de la eSIM" />
+          </div>
+          <div className="field">
+            <label>Nota (opcional)</label>
+            <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Proveedor, lote, plan..." />
+          </div>
+        </div>
+        <button className="btn btn-primary" disabled={!puedeRegistrar} onClick={agregarEsim}>
+          <Check size={14} /> Registrar código
+        </button>
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
+          Aquí llevas el inventario de códigos eSIM disponibles. Cuando uses un código en una venta, elimínalo de la lista
+          manualmente para que la lista siempre refleje solo los códigos que aún tienes disponibles.
+        </div>
+      </div>
+
+      <div className="stat-grid">
+        <Card icon={QrCode} tone="primary" label="Códigos eSIM disponibles" value={esims.length} sub="Pendientes de usar" />
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">
+          <QrCode size={16} /> Códigos disponibles ({esims.length})
+        </div>
+        {esims.length === 0 ? (
+          <div className="empty-state">No hay códigos eSIM registrados todavía. Agrégalos arriba.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Código</th>
+                <th>Nota</th>
+                <th></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {esims.map((e) => (
+                <tr key={e.id}>
+                  <td>{fmtDate(e.fecha)}</td>
+                  <td style={{ fontWeight: 700, fontFamily: "monospace" }}>{e.codigo}</td>
+                  <td>{e.nota || "—"}</td>
+                  <td>
+                    <button className="link-btn" style={{ color: "var(--color-primary)" }} onClick={() => copiarCodigo(e)}>
+                      {copiadoId === e.id ? "¡Copiado!" : "Copiar"}
+                    </button>
+                  </td>
+                  <td>
+                    <button className="link-btn" onClick={() => removeEsim(e.id)}>
+                      Eliminar (usado)
                     </button>
                   </td>
                 </tr>
