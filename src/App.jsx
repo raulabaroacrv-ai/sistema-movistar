@@ -1472,6 +1472,7 @@ export default function App() {
           { id: "compras", label: "Órdenes de Compra", icon: ClipboardList },
           { id: "pagar", label: "Cuentas por Pagar", icon: Receipt },
           { id: "creditos", label: "Créditos", icon: Smartphone },
+          { id: "cashea", label: "Registro Cashea", icon: CreditCard },
           { id: "gastos", label: "Gastos", icon: Receipt },
           { id: "billetera", label: "Billetera", icon: Wallet },
           { id: "esim", label: "eSIM", icon: QrCode },
@@ -1508,6 +1509,7 @@ export default function App() {
                 compras: "Órdenes de Compra",
                 pagar: "Cuentas por Pagar",
                 creditos: "Créditos activos",
+                cashea: "Registro Cashea",
                 gastos: "Gastos consolidados",
                 billetera: "Billetera digital",
                 esim: "Códigos eSIM",
@@ -1553,6 +1555,7 @@ export default function App() {
         {tab === "compras" && <Compras data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "pagar" && <CuentasPorPagar data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "creditos" && <Creditos data={data} setData={setData} money={money} />}
+        {tab === "cashea" && <RegistroCashea data={data} />}
         {tab === "gastos" && <GastosView data={data} setData={setData} money={money} gastosPorConcepto={gastosPorConcepto} PIE_COLORS={PIE_COLORS} walletBalances={walletBalances} />}
         {tab === "billetera" && <Billetera data={data} setData={setData} walletBalances={walletBalances} />}
         {tab === "esim" && <EsimView data={data} setData={setData} />}
@@ -4954,6 +4957,79 @@ function Creditos({ data, setData, money }) {
 }
 
 // ==================== GASTOS ====================
+// ==================== REGISTRO CASHEA ====================
+// Se llena automáticamente — no hay alta manual. Cada vez que se factura un equipo (teléfono) cuyo
+// pago se hace por la modalidad Cashea (ya sea financiado a cuotas con plataforma "Cashea", o
+// pagado de contado pero con Cashea como método de pago en la factura), aparece aquí.
+function RegistroCashea({ data }) {
+  const registros = useMemo(() => {
+    const casheaGrupoIds = new Set(
+      data.sales.filter((s) => s.tipo === "Financiamiento Cashea").map((s) => s.facturaGrupoId)
+    );
+    return data.sales
+      .filter(
+        (s) =>
+          (s.tipo === "Teléfono Crédito" && s.plataforma === "Cashea") ||
+          (s.tipo === "Teléfono Contado" && casheaGrupoIds.has(s.facturaGrupoId))
+      )
+      .map((s) => {
+        const partes = (s.clienteNombre || "").trim().split(/\s+/).filter(Boolean);
+        return {
+          id: s.id,
+          fecha: s.fecha,
+          nombre: partes[0] || "",
+          apellido: partes.slice(1).join(" "),
+          cedula: s.clienteCedula || "",
+          equipo: s.nombre || "",
+        };
+      })
+      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  }, [data.sales]);
+
+  return (
+    <>
+      <div className="stat-grid">
+        <Card icon={CreditCard} tone="primary" label="Equipos vendidos vía Cashea" value={registros.length} sub="Financiados o pagados con Cashea" />
+      </div>
+      <div className="panel">
+        <div className="panel-title">
+          <CreditCard size={16} /> Registro Cashea ({registros.length})
+        </div>
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 12 }}>
+          Esta lista se llena sola: cada vez que factures un equipo (teléfono) usando Cashea — a cuotas o de contado —
+          aparece aquí con los datos del cliente y el equipo que se llevó.
+        </div>
+        {registros.length === 0 ? (
+          <div className="empty-state">Todavía no hay equipos vendidos vía Cashea.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Nombre</th>
+                <th>Apellido</th>
+                <th>Cédula</th>
+                <th>Teléfono</th>
+              </tr>
+            </thead>
+            <tbody>
+              {registros.map((r) => (
+                <tr key={r.id}>
+                  <td>{fmtDate(r.fecha)}</td>
+                  <td style={{ fontWeight: 700 }}>{r.nombre}</td>
+                  <td>{r.apellido}</td>
+                  <td>{r.cedula}</td>
+                  <td>{r.equipo}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
 function GastosView({ data, setData, money, gastosPorConcepto, PIE_COLORS, walletBalances }) {
   const [concepto, setConcepto] = useState("");
   const [monto, setMonto] = useState("");
