@@ -30,6 +30,7 @@ import {
   Share2,
   Copy,
   QrCode,
+  Landmark,
 } from "lucide-react";
 import {
   BarChart,
@@ -955,6 +956,7 @@ export default function App() {
     esims: [],
     ultimoNumeroFactura: 0,
     cholloPct: 17,
+    prestamos: [],
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -1028,6 +1030,7 @@ export default function App() {
     const esims = parsed.esims || [];
     const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
     const cholloPct = parsed.cholloPct != null ? parsed.cholloPct : 17;
+    const prestamos = parsed.prestamos || [];
     setData((d) => ({
       ...d,
       ...parsed,
@@ -1045,6 +1048,7 @@ export default function App() {
       esims,
       ultimoNumeroFactura,
       cholloPct,
+      prestamos,
     }));
   };
 
@@ -1316,6 +1320,17 @@ export default function App() {
       balances[c.cuentaDestino] += Number(c.montoUSD) || 0;
     });
 
+    // Money out: abonos a préstamos/deudas (ej. la deuda con Carlos Abaroa) registrados desde la
+    // pestaña Préstamos. Solo los abonos hechos desde la app descuentan billetera — el historial
+    // importado de movimientos previos (de antes de tener esta pestaña) es solo informativo y no
+    // toca ninguna cuenta, porque ese dinero ya salió de cuentas que la app nunca llegó a registrar.
+    (data.prestamos || []).forEach((pr) => {
+      (pr.abonos || []).forEach((p) => {
+        const account = METHOD_TO_ACCOUNT[p.metodo];
+        if (account) balances[account] -= Number(p.monto) || 0;
+      });
+    });
+
     return balances;
   }, [
     data.sales,
@@ -1327,6 +1342,7 @@ export default function App() {
     data.transferenciasOpercoll,
     data.transferenciasCuentas,
     data.comprasDivisas,
+    data.prestamos,
     data.currency,
     data.tasaBCV,
   ]);
@@ -1476,6 +1492,7 @@ export default function App() {
           { id: "precios", label: "Lista de Precios", icon: Tag },
           { id: "compras", label: "Órdenes de Compra", icon: ClipboardList },
           { id: "pagar", label: "Cuentas por Pagar", icon: Receipt },
+          { id: "prestamos", label: "Préstamos", icon: Landmark },
           { id: "creditos", label: "Créditos", icon: Smartphone },
           { id: "cashea", label: "Registro Cashea", icon: CreditCard },
           { id: "gastos", label: "Gastos", icon: Receipt },
@@ -1513,6 +1530,7 @@ export default function App() {
                 precios: "Lista de Precios",
                 compras: "Órdenes de Compra",
                 pagar: "Cuentas por Pagar",
+                prestamos: "Préstamos",
                 creditos: "Créditos activos",
                 cashea: "Registro Cashea",
                 gastos: "Gastos consolidados",
@@ -1559,6 +1577,7 @@ export default function App() {
         {tab === "precios" && <ListaPrecios data={data} setData={setData} />}
         {tab === "compras" && <Compras data={data} setData={setData} money={money} walletBalances={walletBalances} />}
         {tab === "pagar" && <CuentasPorPagar data={data} setData={setData} money={money} walletBalances={walletBalances} />}
+        {tab === "prestamos" && <Prestamos data={data} setData={setData} walletBalances={walletBalances} />}
         {tab === "creditos" && <Creditos data={data} setData={setData} money={money} />}
         {tab === "cashea" && <RegistroCashea data={data} />}
         {tab === "gastos" && <GastosView data={data} setData={setData} money={money} gastosPorConcepto={gastosPorConcepto} PIE_COLORS={PIE_COLORS} walletBalances={walletBalances} />}
@@ -5076,6 +5095,451 @@ function CuentasPorPagar({ data, setData, money, walletBalances }) {
           );
         })
       )}
+    </>
+  );
+}
+
+// ==================== PRÉSTAMOS ====================
+// Deudas/préstamos que financian el negocio (ej. el préstamo de Carlos Abaroa para arrancar
+// Movistar), independientes de las Órdenes de Compra a proveedores. Cada préstamo lleva un
+// libro tipo estado de cuenta (FECHA · DETALLE · DEBE · HABER · SALDO) igual al que ya se
+// llevaba en Excel, más un plan de pago en cuotas mensuales opcional.
+function Prestamos({ data, setData, walletBalances }) {
+  const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const [expanded, setExpanded] = useState(null);
+  const [nuevoPrestamo, setNuevoPrestamo] = useState({ nombre: "", concepto: "", fecha: todayISO(), montoInicial: "" });
+  const [mostrarForm, setMostrarForm] = useState(false);
+  const [historialForm, setHistorialForm] = useState({});
+  const [abonoRows, setAbonoRows] = useState({});
+  const [planForm, setPlanForm] = useState({});
+
+  const prestamos = data.prestamos || [];
+
+  // Arma el libro cronológico de cada préstamo: una fila por el monto inicial (DEBE), una por
+  // cada movimiento histórico importado y una por cada abono registrado desde la app (HABER),
+  // con el saldo corrido — igual al formato del Excel que ya llevaba Raúl.
+  const prestamosConLibro = prestamos.map((pr) => {
+    const movimientosAsc = [];
+    let seq = 0;
+    movimientosAsc.push({
+      seq: seq++,
+      fecha: pr.fecha,
+      descripcion: pr.concepto ? pr.concepto : "Préstamo",
+      debeUSD: Number(pr.montoInicial) || 0,
+      haberUSD: null,
+    });
+    (pr.historial || []).forEach((h) => {
+      movimientosAsc.push({
+        seq: seq++,
+        fecha: h.fecha,
+        descripcion: h.descripcion || "Abono",
+        debeUSD: null,
+        haberUSD: Number(h.monto) || 0,
+        historialId: h.id,
+      });
+    });
+    (pr.abonos || []).forEach((a) => {
+      movimientosAsc.push({
+        seq: seq++,
+        fecha: a.fecha,
+        descripcion: `Abono (${a.metodo})`,
+        debeUSD: null,
+        haberUSD: pagoToUSD(a.monto, a.metodo, data.tasaInterna),
+        abonoId: a.id,
+      });
+    });
+    movimientosAsc.sort((a, b) => {
+      const cmp = (a.fecha || "").localeCompare(b.fecha || "");
+      return cmp !== 0 ? cmp : a.seq - b.seq;
+    });
+    let saldoCorrido = 0;
+    const movimientos = movimientosAsc.map((m) => {
+      saldoCorrido += (m.debeUSD || 0) - (m.haberUSD || 0);
+      return { ...m, saldoUSD: saldoCorrido };
+    });
+    const saldoActual = Math.max(0, saldoCorrido);
+    const totalAbonado = (Number(pr.montoInicial) || 0) - saldoCorrido;
+    return { ...pr, movimientos, saldoActual, totalAbonado };
+  });
+
+  const totalPrestado = prestamosConLibro.reduce((s, pr) => s + (Number(pr.montoInicial) || 0), 0);
+  const totalAbonadoGlobal = prestamosConLibro.reduce((s, pr) => s + pr.totalAbonado, 0);
+  const totalPendiente = prestamosConLibro.reduce((s, pr) => s + pr.saldoActual, 0);
+
+  const agregarPrestamo = () => {
+    if (!nuevoPrestamo.nombre.trim() || !(Number(nuevoPrestamo.montoInicial) > 0)) return;
+    const registro = {
+      id: uid(),
+      nombre: nuevoPrestamo.nombre.trim(),
+      concepto: nuevoPrestamo.concepto.trim(),
+      fecha: nuevoPrestamo.fecha || todayISO(),
+      montoInicial: Number(nuevoPrestamo.montoInicial) || 0,
+      historial: [],
+      abonos: [],
+      planMeses: null,
+      cuotas: [],
+    };
+    setData((d) => ({ ...d, prestamos: [registro, ...(d.prestamos || [])] }));
+    setNuevoPrestamo({ nombre: "", concepto: "", fecha: todayISO(), montoInicial: "" });
+    setMostrarForm(false);
+    setExpanded(registro.id);
+  };
+
+  const eliminarPrestamo = (id) => setData((d) => ({ ...d, prestamos: (d.prestamos || []).filter((pr) => pr.id !== id) }));
+
+  const getHistorialForm = (id) => historialForm[id] || { fecha: todayISO(), descripcion: "", monto: "" };
+  const setHistorialFormFor = (id, patch) => setHistorialForm((s) => ({ ...s, [id]: { ...getHistorialForm(id), ...patch } }));
+
+  const agregarHistorial = (pr) => {
+    const f = getHistorialForm(pr.id);
+    if (!(Number(f.monto) > 0)) return;
+    const entrada = { id: uid(), fecha: f.fecha || todayISO(), descripcion: f.descripcion.trim(), monto: Number(f.monto) || 0 };
+    setData((d) => ({
+      ...d,
+      prestamos: (d.prestamos || []).map((x) => (x.id === pr.id ? { ...x, historial: [...(x.historial || []), entrada] } : x)),
+    }));
+    setHistorialForm((s) => ({ ...s, [pr.id]: { fecha: todayISO(), descripcion: "", monto: "" } }));
+  };
+
+  const eliminarHistorial = (prestamoId, historialId) =>
+    setData((d) => ({
+      ...d,
+      prestamos: (d.prestamos || []).map((x) =>
+        x.id === prestamoId ? { ...x, historial: (x.historial || []).filter((h) => h.id !== historialId) } : x
+      ),
+    }));
+
+  const getAbonoRows = (id) => abonoRows[id] || [{ metodo: PAYMENT_METHODS[0], monto: "" }];
+  const setAbonoRowsFor = (id, rows) => setAbonoRows((s) => ({ ...s, [id]: rows }));
+  const abonoPagosDe = (id) =>
+    getAbonoRows(id)
+      .filter((r) => Number(r.monto) > 0)
+      .map((r) => ({ metodo: r.metodo, monto: Number(r.monto) || 0 }));
+
+  const registrarAbono = (pr) => {
+    const pagos = abonoPagosDe(pr.id);
+    const excesos = excesosDeSaldo(pagos, walletBalances);
+    if (excesos.length > 0) return;
+    const montoUSD = pagos.reduce((s, p) => s + pagoToUSD(p.monto, p.metodo, data.tasaInterna), 0);
+    if (montoUSD <= 0 || montoUSD > pr.saldoActual + 0.01) return;
+    const nuevos = pagos.map((p) => ({ id: uid(), fecha: todayISO(), metodo: p.metodo, monto: p.monto }));
+    setData((d) => ({
+      ...d,
+      prestamos: (d.prestamos || []).map((x) => (x.id === pr.id ? { ...x, abonos: [...(x.abonos || []), ...nuevos] } : x)),
+    }));
+    setAbonoRowsFor(pr.id, [{ metodo: PAYMENT_METHODS[0], monto: "" }]);
+  };
+
+  const getPlanForm = (id) => planForm[id] || { meses: 24, fechaInicio: addMonths(todayISO(), 1) };
+  const setPlanFormFor = (id, patch) => setPlanForm((s) => ({ ...s, [id]: { ...getPlanForm(id), ...patch } }));
+
+  const generarPlan = (pr) => {
+    const f = getPlanForm(pr.id);
+    const meses = Math.max(1, Number(f.meses) || 24);
+    const montoCuota = Math.max(0, pr.saldoActual / meses);
+    const cuotas = Array.from({ length: meses }, (_, i) => ({
+      numero: i + 1,
+      fechaVencimiento: addMonths(f.fechaInicio || todayISO(), i),
+      monto: Number(montoCuota.toFixed(2)),
+      pagado: false,
+      fechaPago: null,
+    }));
+    setData((d) => ({
+      ...d,
+      prestamos: (d.prestamos || []).map((x) => (x.id === pr.id ? { ...x, planMeses: meses, cuotas } : x)),
+    }));
+  };
+
+  const eliminarPlan = (id) =>
+    setData((d) => ({ ...d, prestamos: (d.prestamos || []).map((x) => (x.id === id ? { ...x, planMeses: null, cuotas: [] } : x)) }));
+
+  const toggleCuota = (prestamoId, numero) =>
+    setData((d) => ({
+      ...d,
+      prestamos: (d.prestamos || []).map((x) =>
+        x.id !== prestamoId
+          ? x
+          : { ...x, cuotas: (x.cuotas || []).map((q) => (q.numero === numero ? { ...q, pagado: !q.pagado, fechaPago: !q.pagado ? todayISO() : null } : q)) }
+      ),
+    }));
+
+  return (
+    <>
+      <div className="stat-grid">
+        <Card icon={Landmark} tone="primary" label="Total prestado" value={fmtUSD(totalPrestado)} sub={`${prestamos.length} préstamo${prestamos.length !== 1 ? "s" : ""}`} />
+        <Card icon={Check} tone="success" label="Total abonado" value={fmtUSD(totalAbonadoGlobal)} sub="Histórico + abonos" />
+        <Card icon={AlertTriangle} tone={totalPendiente > 0 ? "warning" : "success"} label="Saldo pendiente" value={fmtUSD(totalPendiente)} sub={totalPendiente > 0 ? "Por pagar" : "Al día"} />
+      </div>
+
+      <div className="panel">
+        <div className="panel-title" style={{ justifyContent: "space-between", display: "flex", alignItems: "center" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Landmark size={16} /> Préstamos y deudas
+          </span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setMostrarForm((s) => !s)}>
+            <Plus size={13} /> Nuevo préstamo
+          </button>
+        </div>
+
+        {mostrarForm && (
+          <div className="subtable-wrap" style={{ marginBottom: 16 }}>
+            <div className="form-grid">
+              <div className="field">
+                <label>Acreedor</label>
+                <input
+                  value={nuevoPrestamo.nombre}
+                  onChange={(e) => setNuevoPrestamo((s) => ({ ...s, nombre: e.target.value }))}
+                  placeholder="Carlos Abaroa"
+                />
+              </div>
+              <div className="field">
+                <label>Concepto (opcional)</label>
+                <input
+                  value={nuevoPrestamo.concepto}
+                  onChange={(e) => setNuevoPrestamo((s) => ({ ...s, concepto: e.target.value }))}
+                  placeholder="MOVISTAR"
+                />
+              </div>
+              <div className="field">
+                <label>Fecha del préstamo</label>
+                <input type="date" value={nuevoPrestamo.fecha} onChange={(e) => setNuevoPrestamo((s) => ({ ...s, fecha: e.target.value }))} />
+              </div>
+              <div className="field">
+                <label>Monto inicial ($)</label>
+                <input
+                  type="number"
+                  value={nuevoPrestamo.montoInicial}
+                  onChange={(e) => setNuevoPrestamo((s) => ({ ...s, montoInicial: e.target.value }))}
+                  placeholder="50000.00"
+                />
+              </div>
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={agregarPrestamo} disabled={!nuevoPrestamo.nombre.trim() || !(Number(nuevoPrestamo.montoInicial) > 0)}>
+              <Check size={13} /> Guardar préstamo
+            </button>
+          </div>
+        )}
+
+        {prestamosConLibro.length === 0 ? (
+          <div className="empty-state">No tienes préstamos registrados todavía.</div>
+        ) : (
+          prestamosConLibro.map((pr) => {
+            const isOpen = expanded === pr.id;
+            const hForm = getHistorialForm(pr.id);
+            const rows = getAbonoRows(pr.id);
+            const pagosAbono = abonoPagosDe(pr.id);
+            const excesos = excesosDeSaldo(pagosAbono, walletBalances);
+            const montoAbonoUSD = pagosAbono.reduce((s, p) => s + pagoToUSD(p.monto, p.metodo, data.tasaInterna), 0);
+            const pForm = getPlanForm(pr.id);
+            const tieneCuotas = pr.cuotas && pr.cuotas.length > 0;
+            const cuotasPagadas = tieneCuotas ? pr.cuotas.filter((q) => q.pagado).length : 0;
+            const pctPlan = tieneCuotas ? (cuotasPagadas / pr.cuotas.length) * 100 : 0;
+
+            return (
+              <div key={pr.id} style={{ marginBottom: 16, borderTop: "1px solid var(--color-border)", paddingTop: 16 }}>
+                <div
+                  style={{ cursor: "pointer", justifyContent: "space-between", display: "flex", alignItems: "center" }}
+                  onClick={() => setExpanded(isOpen ? null : pr.id)}
+                >
+                  <span>
+                    <div style={{ fontWeight: 800, fontSize: 14 }}>{pr.nombre}</div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                      {pr.concepto ? `${pr.concepto} · ` : ""}Desde {fmtDate(pr.fecha)}
+                    </div>
+                  </span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Badge tone={pr.saldoActual > 0.01 ? "danger" : "success"}>
+                      {pr.saldoActual > 0.01 ? `Debe ${fmtUSD(pr.saldoActual)}` : "Al día"}
+                    </Badge>
+                    {isOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                  </span>
+                </div>
+
+                {isOpen && (
+                  <div style={{ marginTop: 12 }}>
+                    <table style={{ marginBottom: 16 }}>
+                      <thead>
+                        <tr>
+                          <th>Fecha</th>
+                          <th>Detalle</th>
+                          <th>Debe</th>
+                          <th>Haber</th>
+                          <th>Saldo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pr.movimientos.map((m, i) => (
+                          <tr key={i}>
+                            <td>{fmtDate(m.fecha)}</td>
+                            <td>
+                              {m.descripcion}
+                              {m.historialId && (
+                                <button
+                                  className="link-btn"
+                                  style={{ marginLeft: 6, fontSize: 10.5 }}
+                                  onClick={() => eliminarHistorial(pr.id, m.historialId)}
+                                >
+                                  Eliminar
+                                </button>
+                              )}
+                            </td>
+                            <td>{m.debeUSD != null ? fmtUSD(m.debeUSD) : "-"}</td>
+                            <td style={{ color: "var(--color-success)", fontWeight: m.haberUSD != null ? 700 : 400 }}>
+                              {m.haberUSD != null ? fmtUSD(m.haberUSD) : "-"}
+                            </td>
+                            <td style={{ fontWeight: 800 }}>{fmtUSD(m.saldoUSD)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+
+                    <div className="subtable-wrap" style={{ marginBottom: 16 }}>
+                      <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 4 }}>Agregar movimiento histórico</div>
+                      <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 8 }}>
+                        Para cargar abonos anteriores a esta pestaña (como los de tu Excel). Es solo un registro informativo — no
+                        descuenta ninguna cuenta de tu Billetera.
+                      </div>
+                      <div className="form-grid">
+                        <div className="field">
+                          <label>Fecha</label>
+                          <input type="date" value={hForm.fecha} onChange={(e) => setHistorialFormFor(pr.id, { fecha: e.target.value })} />
+                        </div>
+                        <div className="field">
+                          <label>Descripción</label>
+                          <input
+                            value={hForm.descripcion}
+                            onChange={(e) => setHistorialFormFor(pr.id, { descripcion: e.target.value })}
+                            placeholder="Abono Zelle"
+                          />
+                        </div>
+                        <div className="field">
+                          <label>Monto ($)</label>
+                          <input
+                            type="number"
+                            value={hForm.monto}
+                            onChange={(e) => setHistorialFormFor(pr.id, { monto: e.target.value })}
+                            placeholder="0.00"
+                          />
+                        </div>
+                      </div>
+                      <button className="btn btn-ghost btn-sm" onClick={() => agregarHistorial(pr)} disabled={!(Number(hForm.monto) > 0)}>
+                        <Plus size={13} /> Agregar al historial
+                      </button>
+                    </div>
+
+                    {pr.saldoActual > 0.01 && (
+                      <div className="subtable-wrap" style={{ marginBottom: 16 }}>
+                        <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 4 }}>Registrar abono</div>
+                        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 8 }}>
+                          Este sí descuenta de la cuenta de tu Billetera que elijas. Saldo pendiente: {fmtUSD(pr.saldoActual)}.
+                        </div>
+                        <AbonoMultiMetodo rows={rows} onChange={(v) => setAbonoRowsFor(pr.id, v)} />
+                        <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginBottom: 8 }}>Total a abonar: {fmtUSD(montoAbonoUSD)}</div>
+                        {excesos.length > 0 && (
+                          <div style={{ marginBottom: 8 }}>
+                            {excesos.map((e, i) => (
+                              <div key={i} style={{ fontSize: 11.5, color: "var(--color-danger)", fontWeight: 700 }}>
+                                Saldo insuficiente en {e.cuenta}: disponible {fmtAccountAmount(e.disponible, ACCOUNT_CURRENCY[e.cuenta])}.
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {montoAbonoUSD > pr.saldoActual + 0.01 && (
+                          <div style={{ fontSize: 11.5, color: "var(--color-danger)", fontWeight: 700, marginBottom: 8 }}>
+                            El monto a abonar no puede superar el saldo pendiente ({fmtUSD(pr.saldoActual)}).
+                          </div>
+                        )}
+                        <button
+                          className="btn btn-primary btn-sm"
+                          disabled={excesos.length > 0 || montoAbonoUSD <= 0 || montoAbonoUSD > pr.saldoActual + 0.01}
+                          onClick={() => registrarAbono(pr)}
+                        >
+                          <Check size={13} /> Registrar abono
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="subtable-wrap" style={{ marginBottom: 16 }}>
+                      <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 4 }}>Plan de pago</div>
+                      {!tieneCuotas ? (
+                        pr.saldoActual > 0.01 ? (
+                          <>
+                            <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 8 }}>
+                              Genera un cronograma de cuotas mensuales iguales a partir del saldo pendiente ({fmtUSD(pr.saldoActual)}).
+                            </div>
+                            <div className="form-grid">
+                              <div className="field">
+                                <label>Número de meses</label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={pForm.meses}
+                                  onChange={(e) => setPlanFormFor(pr.id, { meses: e.target.value })}
+                                />
+                              </div>
+                              <div className="field">
+                                <label>Fecha 1ra cuota</label>
+                                <input
+                                  type="date"
+                                  value={pForm.fechaInicio}
+                                  onChange={(e) => setPlanFormFor(pr.id, { fechaInicio: e.target.value })}
+                                />
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 8 }}>
+                              Cuota estimada: {fmtUSD(pr.saldoActual / Math.max(1, Number(pForm.meses) || 24))}/mes
+                            </div>
+                            <button className="btn btn-ghost btn-sm" onClick={() => generarPlan(pr)}>
+                              <Check size={13} /> Generar plan de pago
+                            </button>
+                          </>
+                        ) : (
+                          <div style={{ fontSize: 11.5, color: "var(--color-text-muted)" }}>No hace falta plan — préstamo al día.</div>
+                        )
+                      ) : (
+                        <>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                            <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                              {cuotasPagadas}/{pr.cuotas.length} cuotas pagadas · plan a {pr.planMeses} meses
+                            </div>
+                            <button className="link-btn" onClick={() => eliminarPlan(pr.id)}>
+                              Eliminar plan
+                            </button>
+                          </div>
+                          <div className="progress-track" style={{ marginBottom: 10 }}>
+                            <div className="progress-fill" style={{ width: `${pctPlan}%` }} />
+                          </div>
+                          {pr.cuotas.map((q) => {
+                            const vencida = !q.pagado && daysBetween(q.fechaVencimiento, todayISO()) > 0;
+                            return (
+                              <div className={`cuota-chip ${q.pagado ? "pagado" : ""}`} key={q.numero}>
+                                <div className={`checkbox-btn ${q.pagado ? "checked" : ""}`} onClick={() => toggleCuota(pr.id, q.numero)}>
+                                  {q.pagado && <Check size={13} />}
+                                </div>
+                                <span style={{ flex: 1, marginLeft: 8 }}>
+                                  Cuota {q.numero} · vence {fmtDate(q.fechaVencimiento)}
+                                  {vencida && <span style={{ color: "var(--color-danger)", fontWeight: 700 }}> · vencida</span>}
+                                  {q.pagado && q.fechaPago && <span style={{ color: "var(--color-success)" }}> · pagada {fmtDate(q.fechaPago)}</span>}
+                                </span>
+                                <span style={{ fontWeight: 700 }}>{fmtUSD(q.monto)}</span>
+                              </div>
+                            );
+                          })}
+                        </>
+                      )}
+                    </div>
+
+                    <button className="link-btn" style={{ color: "var(--color-danger)" }} onClick={() => eliminarPrestamo(pr.id)}>
+                      Eliminar préstamo
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
     </>
   );
 }
