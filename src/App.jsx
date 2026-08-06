@@ -1152,6 +1152,7 @@ export default function App() {
     const accesorios = data.sales.filter((s) => s.tipo === "Accesorios");
     const telContado = data.sales.filter((s) => s.tipo === "Teléfono Contado");
     const telCredito = data.sales.filter((s) => s.tipo === "Teléfono Crédito");
+    const accCredito = data.sales.filter((s) => s.tipo === "Accesorio Crédito");
     const cambios = data.sales.filter((s) => s.tipo === "Cambio/Recuperación de Línea");
 
     const totalComisiones = lineas.reduce((s, l) => s + (Number(l.comision) || 0), 0);
@@ -1163,6 +1164,7 @@ export default function App() {
 
     const gananciaTelContado = telContado.reduce((s, t) => s + t.ganancia, 0);
     const gananciaTelCreditoPotencial = telCredito.reduce((s, t) => s + t.ganancia, 0);
+    const gananciaAccCreditoPotencial = accCredito.reduce((s, t) => s + t.ganancia, 0);
     const gananciaCambios = cambios.reduce((s, c) => s + c.ganancia, 0);
 
     const montoPorCobrar = data.credits.reduce((s, c) => s + c.cuotas.filter((q) => !q.pagado).reduce((qs, q) => qs + q.monto, 0), 0);
@@ -1179,6 +1181,7 @@ export default function App() {
       gananciaAccesorios,
       gananciaTelContado,
       gananciaTelCreditoPotencial,
+      gananciaAccCreditoPotencial,
       gananciaCambios,
       montoPorCobrar,
       stockBajo,
@@ -1187,6 +1190,7 @@ export default function App() {
       countAccesorios: accesorios.length,
       countTelContado: telContado.length,
       countTelCredito: telCredito.length,
+      countAccCredito: accCredito.length,
       countCambios: cambios.length,
     };
   }, [data]);
@@ -1896,6 +1900,8 @@ const descripcionVentaLinea = (s) => {
       return s.nombre || "Teléfono";
     case "Teléfono Crédito":
       return `${s.nombre || "Teléfono"} · crédito ${s.plataforma || ""}`.trim();
+    case "Accesorio Crédito":
+      return `${s.nombre || "Accesorio/Repuesto"}${s.cantidad > 1 ? " × " + s.cantidad : ""} · crédito ${s.plataforma || ""}`.trim();
     case "Accesorios":
       return (s.items || []).map((i) => `${i.nombre} × ${i.cantidad}`).join(", ") || "Accesorios";
     default:
@@ -1909,12 +1915,15 @@ const descripcionVentaLinea = (s) => {
 const construirReciboHistorico = (sale, allSales, data) => {
   const ventasGrupo = sale.facturaGrupoId ? allSales.filter((s) => s.facturaGrupoId === sale.facturaGrupoId) : [sale];
   const financiamiento = ventasGrupo.find((s) => s.tipo === "Financiamiento Cashea");
-  const ventaCredito = ventasGrupo.find((s) => s.tipo === "Teléfono Crédito");
+  const ventaCredito = ventasGrupo.find((s) => s.tipo === "Teléfono Crédito" || s.tipo === "Accesorio Crédito");
   const lineasVisibles = ventasGrupo.filter((s) => s.tipo !== "Financiamiento Cashea");
 
   const items = lineasVisibles.map((s) => ({
     descripcion: descripcionVentaLinea(s),
-    monto: s.tipo === "Teléfono Crédito" ? Number(s.precioVenta) || 0 : pagosNativeTotal(s.pagos || [], data.currency, data.tasaInterna),
+    monto:
+      s.tipo === "Teléfono Crédito" || s.tipo === "Accesorio Crédito"
+        ? Number(s.precioVenta) || 0
+        : pagosNativeTotal(s.pagos || [], data.currency, data.tasaInterna),
   }));
 
   const pagos = lineasVisibles.flatMap((s) => s.pagos || []);
@@ -2112,6 +2121,13 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   // Accesorios
   const [accProductId, setAccProductId] = useState("");
   const [accCantidad, setAccCantidad] = useState(1);
+  const [accSubTipo, setAccSubTipo] = useState("contado");
+  const [accCreditoInicial, setAccCreditoInicial] = useState("");
+  const [accCreditoCuotas, setAccCreditoCuotas] = useState(3);
+  const [accCreditoFecha, setAccCreditoFecha] = useState(todayISO());
+  const [pagoInicialCreditoAcc, setPagoInicialCreditoAcc] = useState(paymentDefault());
+  const [accCreditoPlataforma, setAccCreditoPlataforma] = useState("Cashea");
+  const [accCreditoComisionPct, setAccCreditoComisionPct] = useState(String(PLATFORM_COMMISSION_DEFAULT["Cashea"] || ""));
 
   // Teléfono
   const [telSubTipo, setTelSubTipo] = useState("contado");
@@ -2160,6 +2176,13 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
     setCambioPrecioMoneda(data.currency);
     setAccProductId("");
     setAccCantidad(1);
+    setAccSubTipo("contado");
+    setAccCreditoInicial("");
+    setAccCreditoCuotas(3);
+    setAccCreditoFecha(todayISO());
+    setPagoInicialCreditoAcc(paymentDefault());
+    setAccCreditoPlataforma("Cashea");
+    setAccCreditoComisionPct(String(PLATFORM_COMMISSION_DEFAULT["Cashea"] || ""));
     setTelSubTipo("contado");
     setTelProductId("");
     setPrecioContado("");
@@ -2586,6 +2609,106 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
     resetFormularioItem();
   };
 
+  // ---------- Accesorio/Repuesto a crédito (misma modalidad que Teléfono a crédito, para Cashea/
+  // Chollo/Crédito propio) ----------
+  const submitAccesorioCredito = () => {
+    const prod = data.products.find((p) => p.id === accProductId);
+    if (!cliente.nombre.trim() || !prod) return;
+    const cantidad = Math.max(1, Number(accCantidad) || 1);
+    const precioUnitCredito = precioCreditoTelefono(prod, accCreditoPlataforma);
+    const precioTotal = precioUnitCredito * cantidad;
+    const costoUnit = Number(prod.costo) || 0;
+    const costoTotal = costoUnit * cantidad;
+    const inicial = Number(accCreditoInicial) || 0;
+    const n = Number(accCreditoCuotas) || 1;
+    const montoCuota = Math.max(0, (precioTotal - inicial) / n);
+    const comisionPct = accCreditoPlataforma === "Crédito propio" ? 0 : Number(accCreditoComisionPct) || 0;
+    const cuotas = Array.from({ length: n }, (_, i) => {
+      const monto = Number(montoCuota.toFixed(2));
+      return {
+        numero: i + 1,
+        fechaVencimiento: addMonths(accCreditoFecha, i),
+        monto,
+        montoNeto: Number((monto * (1 - comisionPct / 100)).toFixed(2)),
+        pagado: false,
+        fechaPago: null,
+      };
+    });
+    const saleId = uid();
+    const creditId = uid();
+    const pagos = inicial > 0 ? buildPagos(pagoInicialCreditoAcc).map((p) => ({ ...p, fecha: todayISO() })) : [];
+    const financiado = precioTotal - inicial;
+    const montoFinanciadoNeto = Number((financiado * (1 - comisionPct / 100)).toFixed(2));
+    const numeroFactura = (data.ultimoNumeroFactura || 0) + 1;
+    const saleRecord = {
+      id: saleId,
+      fecha: todayISO(),
+      facturaGrupoId: uid(),
+      numeroFactura,
+      tipo: "Accesorio Crédito",
+      clienteNombre: cliente.nombre,
+      clienteCedula: cliente.cedula,
+      clienteTelefono: cliente.telefono,
+      productId: prod.id,
+      nombre: prod.nombre,
+      cantidad,
+      costo: costoTotal,
+      precioVenta: precioTotal,
+      inicial,
+      numeroCuotas: n,
+      creditId,
+      pagos,
+      plataforma: accCreditoPlataforma,
+      montoFinanciadoNeto,
+      liquidado: false,
+      fechaLiquidacion: null,
+      ganancia: precioTotal - costoTotal,
+    };
+    const creditRecord = {
+      id: creditId,
+      saleId,
+      cliente: cliente.nombre,
+      cedula: cliente.cedula,
+      telefono: `${prod.nombre}${cantidad > 1 ? " × " + cantidad : ""}`,
+      costoTelefono: costoTotal,
+      precioTotal,
+      inicial,
+      fecha: todayISO(),
+      plataforma: accCreditoPlataforma,
+      comisionPct,
+      cuotas,
+    };
+    setData((d) => ({
+      ...d,
+      sales: [saleRecord, ...d.sales],
+      credits: [creditRecord, ...d.credits],
+      clients: upsertClient(d.clients, cliente),
+      products: decrementStock(d.products, prod.id, cantidad),
+      ultimoNumeroFactura: numeroFactura,
+    }));
+
+    setReciboFactura({
+      numero: numeroFactura,
+      fecha: todayISO(),
+      cliente: { ...cliente },
+      items: [{ descripcion: `Accesorio/Repuesto a crédito · ${prod.nombre}${cantidad > 1 ? " × " + cantidad : ""}`, monto: precioTotal }],
+      pagos,
+      totalBruto: precioTotal,
+      descuento: 0,
+      total: precioTotal,
+      cobrado: inicial,
+      esCashea: false,
+      esCredito: true,
+      plataformaCredito: accCreditoPlataforma,
+      numeroCuotas: n,
+      montoCuota,
+    });
+
+    setCliente({ nombre: "", cedula: "", telefono: "" });
+    setStep("cliente");
+    resetFormularioItem();
+  };
+
   // ---------- Eliminar una venta del historial (para corregir errores y rehacerla) ----------
   // Revierte lo que esa venta afectó: devuelve el stock del producto/SIM que se descontó, y si
   // era un teléfono a crédito, también elimina su cronograma de cuotas asociado. La comisión,
@@ -2599,12 +2722,15 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
         products = products.map((p) => (p.id === sale.simProductId ? { ...p, stock: Number(p.stock) + 1 } : p));
       } else if (sale.tipo === "Teléfono Contado" || sale.tipo === "Teléfono Crédito") {
         products = products.map((p) => (p.id === sale.productId ? { ...p, stock: Number(p.stock) + 1 } : p));
+      } else if (sale.tipo === "Accesorio Crédito") {
+        products = products.map((p) => (p.id === sale.productId ? { ...p, stock: Number(p.stock) + (Number(sale.cantidad) || 1) } : p));
       } else if (sale.tipo === "Accesorios") {
         (sale.items || []).forEach((it) => {
           products = products.map((p) => (p.id === it.productId ? { ...p, stock: Number(p.stock) + (Number(it.cantidad) || 0) } : p));
         });
       }
-      const credits = sale.tipo === "Teléfono Crédito" ? d.credits.filter((c) => c.id !== sale.creditId) : d.credits;
+      const credits =
+        sale.tipo === "Teléfono Crédito" || sale.tipo === "Accesorio Crédito" ? d.credits.filter((c) => c.id !== sale.creditId) : d.credits;
       return {
         ...d,
         sales: d.sales.filter((s) => s.id !== sale.id),
@@ -2701,7 +2827,8 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
         </div>
         <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 12 }}>
           Agrega tantos productos o servicios de cualquier categoría como necesites — todo se suma en una sola factura para
-          este cliente. El teléfono a crédito se factura aparte, ya que es un financiamiento independiente.
+          este cliente. El teléfono o el accesorio/repuesto a crédito se facturan aparte, ya que son un financiamiento
+          independiente.
         </div>
         <div className="type-grid">
           <div className={`type-card ${tipoVenta === "linea" ? "selected" : ""}`} onClick={() => setTipoVenta("linea")}>
@@ -2817,6 +2944,14 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
 
         {tipoVenta === "accesorios" && (
           <div>
+            <div className="subtype-toggle">
+              <button className={accSubTipo === "contado" ? "selected" : ""} onClick={() => setAccSubTipo("contado")}>
+                De contado
+              </button>
+              <button className={accSubTipo === "credito" ? "selected" : ""} onClick={() => setAccSubTipo("credito")}>
+                A crédito
+              </button>
+            </div>
             <div className="form-grid">
               <div className="field">
                 <label>Producto</label>
@@ -2833,9 +2968,135 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                 <input type="number" min={1} value={accCantidad} onChange={(e) => setAccCantidad(e.target.value)} />
               </div>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={agregarAccesorio}>
-              <Plus size={13} /> Agregar al carrito
-            </button>
+
+            {accSubTipo === "contado" && (
+              <button className="btn btn-ghost btn-sm" onClick={agregarAccesorio}>
+                <Plus size={13} /> Agregar al carrito
+              </button>
+            )}
+
+            {accSubTipo === "credito" && (
+              <>
+                <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 10 }}>
+                  Misma modalidad que un teléfono a crédito: se factura aparte de inmediato (no se agrega al carrito), con
+                  inicial + cuotas, y la plataforma (Cashea/Chollo) te paga el neto financiado más adelante.
+                </div>
+                <label style={{ fontSize: 11, fontWeight: 700, color: "var(--color-text-muted)" }}>Plataforma de financiamiento</label>
+                <div className="subtype-toggle" style={{ marginBottom: 12 }}>
+                  {CREDIT_PLATFORMS.map((p) => (
+                    <button
+                      key={p}
+                      className={accCreditoPlataforma === p ? "selected" : ""}
+                      onClick={() => {
+                        setAccCreditoPlataforma(p);
+                        setAccCreditoComisionPct(p === "Crédito propio" ? "" : String(PLATFORM_COMMISSION_DEFAULT[p] || ""));
+                      }}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+                <div className="form-grid">
+                  <div className="field">
+                    <label>Inicial</label>
+                    <input type="number" value={accCreditoInicial} onChange={(e) => setAccCreditoInicial(e.target.value)} placeholder="0.00" />
+                  </div>
+                  <div className="field">
+                    <label>Número de cuotas</label>
+                    <input type="number" min={1} value={accCreditoCuotas} onChange={(e) => setAccCreditoCuotas(e.target.value)} />
+                  </div>
+                  <div className="field">
+                    <label>Fecha 1ra cuota</label>
+                    <input type="date" value={accCreditoFecha} onChange={(e) => setAccCreditoFecha(e.target.value)} />
+                  </div>
+                  {accCreditoPlataforma !== "Crédito propio" && (
+                    <div className="field">
+                      <label>% comisión {accCreditoPlataforma} (uso interno)</label>
+                      <input type="number" value={accCreditoComisionPct} onChange={(e) => setAccCreditoComisionPct(e.target.value)} placeholder="0" />
+                    </div>
+                  )}
+                </div>
+                {accCreditoPlataforma !== "Crédito propio" && (
+                  <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginBottom: 10 }}>
+                    Esta comisión solo la ves tú en el seguimiento de Créditos — no se refleja en lo que le cobras al cliente.
+                  </div>
+                )}
+                <label style={{ fontSize: 11, fontWeight: 700, color: "var(--color-text-muted)" }}>Pago de la inicial</label>
+                <PaymentSection value={pagoInicialCreditoAcc} onChange={setPagoInicialCreditoAcc} label="Monto de la inicial" />
+                {(() => {
+                  const inicialNum = Number(accCreditoInicial) || 0;
+                  const collected = pagosNativeTotal(buildPagos(pagoInicialCreditoAcc), data.currency, data.tasaBCV);
+                  const collectedReal = pagosNativeTotal(buildPagos(pagoInicialCreditoAcc), data.currency, data.tasaInterna);
+                  const diff = inicialNum - collected;
+                  const completo = diff <= 0.01;
+                  const prodSeleccionado = data.products.find((p) => p.id === accProductId);
+                  const faltaCliente = !cliente.nombre.trim();
+                  const faltaProducto = !prodSeleccionado;
+                  const cantidadNum = Math.max(1, Number(accCantidad) || 1);
+                  const precioTotalPreview = precioCreditoTelefono(prodSeleccionado, accCreditoPlataforma) * cantidadNum;
+                  const financiadoPreview = Math.max(0, precioTotalPreview - inicialNum);
+                  return (
+                    <div className="receipt-box">
+                      {prodSeleccionado && accCreditoPlataforma !== "Crédito propio" && (
+                        <div className="receipt-row">
+                          <span>Precio por {accCreditoPlataforma} (Lista de Precios){cantidadNum > 1 ? ` × ${cantidadNum}` : ""}</span>
+                          <span style={{ fontWeight: 800 }}>{money(precioTotalPreview)}</span>
+                        </div>
+                      )}
+                      <div className="receipt-row">
+                        <span>Inicial a cobrar (a tasa BCV)</span>
+                        <span style={{ fontWeight: 800 }}>{money(inicialNum)}</span>
+                      </div>
+                      <div className="receipt-row">
+                        <span>Cobrado (a tasa BCV)</span>
+                        <span style={{ fontWeight: 800 }}>{money(collected)}</span>
+                      </div>
+                      <div className="receipt-row receipt-muted">
+                        <span>Valor real de lo cobrado (tasa interna)</span>
+                        <span>{money(collectedReal)}</span>
+                      </div>
+                      {prodSeleccionado && accCreditoPlataforma !== "Crédito propio" && (
+                        <div className="receipt-row">
+                          <span>Se acumula en cuenta {accCreditoPlataforma} (precio − inicial)</span>
+                          <span style={{ fontWeight: 800, color: "var(--color-success)" }}>{money(financiadoPreview)}</span>
+                        </div>
+                      )}
+                      <div className="receipt-divider" />
+                      {inicialNum <= 0 ? (
+                        <div className="receipt-status neutral">Sin inicial — se factura sin cobro ahora</div>
+                      ) : completo && diff < -0.01 ? (
+                        <div className="receipt-status success">Vuelto a entregar: {formatBothCurrencies(-diff, data.currency, data.tasaBCV)}</div>
+                      ) : completo ? (
+                        <div className="receipt-status success">Cobro completo ✓</div>
+                      ) : (
+                        <div className="receipt-status danger">
+                          Falta por cobrar: {money(diff)}
+                          <div style={{ fontSize: 11, fontWeight: 700 }}>
+                            Pide Bs. {convertNativeToBs(diff, data.currency, data.tasaBCV).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (tasa BCV — así se factura)
+                          </div>
+                          <div style={{ fontSize: 10.5, fontWeight: 500 }}>
+                            Esos Bs. equivalen a ${pagoToUSD(convertNativeToBs(diff, data.currency, data.tasaBCV), "Efectivo", data.tasaInterna).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reales a tasa interna
+                          </div>
+                        </div>
+                      )}
+                      {(faltaCliente || faltaProducto) && (
+                        <div style={{ fontSize: 11.5, color: "var(--color-danger)", fontWeight: 700, marginTop: 8 }}>
+                          Falta: {[faltaCliente && "datos del cliente (arriba)", faltaProducto && "seleccionar el producto"].filter(Boolean).join(" y ")}
+                        </div>
+                      )}
+                      <button
+                        className="btn btn-primary"
+                        style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+                        disabled={(inicialNum > 0 && !completo) || faltaCliente || faltaProducto}
+                        onClick={submitAccesorioCredito}
+                      >
+                        <Check size={14} /> Facturar venta a crédito
+                      </button>
+                    </div>
+                  );
+                })()}
+              </>
+            )}
           </div>
         )}
 
@@ -4783,7 +5044,9 @@ function Creditos({ data, setData, money }) {
     setData((d) => ({
       ...d,
       sales: d.sales.map((s) =>
-        (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === plataforma && !s.liquidado
+        (s.tipo === "Teléfono Crédito" || s.tipo === "Accesorio Crédito" || s.tipo === "Financiamiento Cashea") &&
+        s.plataforma === plataforma &&
+        !s.liquidado
           ? { ...s, liquidado: true, fechaLiquidacion: todayISO() }
           : s
       ),
@@ -4791,7 +5054,10 @@ function Creditos({ data, setData, money }) {
   };
 
   const ventasCredito = data.sales.filter(
-    (s) => (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma && s.plataforma !== "Crédito propio"
+    (s) =>
+      (s.tipo === "Teléfono Crédito" || s.tipo === "Accesorio Crédito" || s.tipo === "Financiamiento Cashea") &&
+      s.plataforma &&
+      s.plataforma !== "Crédito propio"
   );
   const porPlataforma = {};
   ventasCredito.forEach((s) => {
@@ -5288,6 +5554,7 @@ const SALE_TIPO_LABEL = {
   Accesorios: "Accesorios",
   "Teléfono Contado": "Teléfono de contado",
   "Teléfono Crédito": "Inicial de teléfono a crédito",
+  "Accesorio Crédito": "Inicial de accesorio/repuesto a crédito",
 };
 
 // Collects every transaction that has touched a given wallet account, from every place
@@ -5316,7 +5583,11 @@ function getMovimientosCuenta(data, account) {
   // llega directo a la Cuenta Bancaria (no se queda "en Cashea"/"Chollo").
   if (account === "Cuenta Bancaria") {
     data.sales.forEach((s) => {
-      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && (s.plataforma === "Cashea" || s.plataforma === "Chollo") && s.liquidado) {
+      if (
+        (s.tipo === "Teléfono Crédito" || s.tipo === "Accesorio Crédito" || s.tipo === "Financiamiento Cashea") &&
+        (s.plataforma === "Cashea" || s.plataforma === "Chollo") &&
+        s.liquidado
+      ) {
         movs.push({
           fecha: s.fechaLiquidacion || s.fecha,
           orden: s.id,
@@ -5333,7 +5604,11 @@ function getMovimientosCuenta(data, account) {
   // valoran a tasa interna (la diferencia entre ambas tasas es lo que se "pierde" al cobrar a BCV).
   if (account === "Cashea" || account === "Chollo") {
     data.sales.forEach((s) => {
-      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === account && s.liquidado) {
+      if (
+        (s.tipo === "Teléfono Crédito" || s.tipo === "Accesorio Crédito" || s.tipo === "Financiamiento Cashea") &&
+        s.plataforma === account &&
+        s.liquidado
+      ) {
         const netoUSD = Number(s.montoFinanciadoNeto) || 0;
         const bsBCV = netoUSD * (Number(data.tasaBCV) || 1);
         const usdInterna = bsBCV / (Number(data.tasaInterna) || 1);
@@ -5454,7 +5729,11 @@ function Billetera({ data, setData, walletBalances }) {
   const pendienteFinanciamiento = useMemo(() => {
     const result = {};
     data.sales.forEach((s) => {
-      if ((s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && (s.plataforma === "Cashea" || s.plataforma === "Chollo") && !s.liquidado) {
+      if (
+        (s.tipo === "Teléfono Crédito" || s.tipo === "Accesorio Crédito" || s.tipo === "Financiamiento Cashea") &&
+        (s.plataforma === "Cashea" || s.plataforma === "Chollo") &&
+        !s.liquidado
+      ) {
         result[s.plataforma] = (result[s.plataforma] || 0) + (Number(s.montoFinanciadoNeto) || 0);
       }
     });
@@ -5575,7 +5854,12 @@ function Billetera({ data, setData, walletBalances }) {
     const movimientos = getMovimientosCuenta(data, acc);
     const esFinanciamiento = acc === "Cashea" || acc === "Chollo";
     const pendientesCuenta = esFinanciamiento
-      ? data.sales.filter((s) => (s.tipo === "Teléfono Crédito" || s.tipo === "Financiamiento Cashea") && s.plataforma === acc && !s.liquidado)
+      ? data.sales.filter(
+          (s) =>
+            (s.tipo === "Teléfono Crédito" || s.tipo === "Accesorio Crédito" || s.tipo === "Financiamiento Cashea") &&
+            s.plataforma === acc &&
+            !s.liquidado
+        )
       : [];
     const pendienteTotalCuenta = pendientesCuenta.reduce((s, v) => s + (Number(v.montoFinanciadoNeto) || 0), 0);
     return (
