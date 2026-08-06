@@ -52,6 +52,7 @@ const BS_METHODS = ["Efectivo", "Pago Móvil", "Punto de Venta"];
 const currencySymbolFor = (metodo) => (BS_METHODS.includes(metodo) ? "Bs." : "$");
 const CATEGORIES = ["SIM Card", "eSIM", "Accesorio", "Teléfono", "Repuestos"];
 const CREDIT_PLATFORMS = ["Crédito propio", "Cashea", "Chollo"];
+const ACC_CREDIT_PLATFORMS = ["Crédito propio", "Cashea"];
 const PLATFORM_COMMISSION_DEFAULT = { Cashea: 4, Chollo: 5 };
 // Cashea permite financiar cualquier producto (línea nueva, cambio de línea, accesorios, repuestos),
 // no solo teléfonos. Cuando se usa así, cobra una comisión fija del 7% sobre lo financiado.
@@ -2128,6 +2129,8 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   const [pagoInicialCreditoAcc, setPagoInicialCreditoAcc] = useState(paymentDefault());
   const [accCreditoPlataforma, setAccCreditoPlataforma] = useState("Cashea");
   const [accCreditoComisionPct, setAccCreditoComisionPct] = useState(String(PLATFORM_COMMISSION_DEFAULT["Cashea"] || ""));
+  const [accCreditoDescuento, setAccCreditoDescuento] = useState("");
+  const [accCreditoDescuentoMoneda, setAccCreditoDescuentoMoneda] = useState(data.currency);
 
   // Teléfono
   const [telSubTipo, setTelSubTipo] = useState("contado");
@@ -2140,6 +2143,8 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   const [pagoInicialCredito, setPagoInicialCredito] = useState(paymentDefault());
   const [creditoPlataforma, setCreditoPlataforma] = useState("Crédito propio");
   const [creditoComisionPct, setCreditoComisionPct] = useState("");
+  const [creditoDescuento, setCreditoDescuento] = useState("");
+  const [creditoDescuentoMoneda, setCreditoDescuentoMoneda] = useState(data.currency);
 
   const cedulaMatch = (cedula) => {
     const norm = (cedula || "").trim().toLowerCase();
@@ -2183,6 +2188,8 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
     setPagoInicialCreditoAcc(paymentDefault());
     setAccCreditoPlataforma("Cashea");
     setAccCreditoComisionPct(String(PLATFORM_COMMISSION_DEFAULT["Cashea"] || ""));
+    setAccCreditoDescuento("");
+    setAccCreditoDescuentoMoneda(data.currency);
     setTelSubTipo("contado");
     setTelProductId("");
     setPrecioContado("");
@@ -2193,6 +2200,8 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
     setPagoInicialCredito(paymentDefault());
     setCreditoPlataforma("Crédito propio");
     setCreditoComisionPct("");
+    setCreditoDescuento("");
+    setCreditoDescuentoMoneda(data.currency);
   };
 
   const finalizarFactura = () => {
@@ -2518,7 +2527,12 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   const submitTelCredito = () => {
     const prod = data.products.find((p) => p.id === telProductId);
     if (!cliente.nombre.trim() || !prod) return;
-    const precioTotal = precioCreditoTelefono(prod, creditoPlataforma);
+    const precioTotalBruto = precioCreditoTelefono(prod, creditoPlataforma);
+    const telDescuentoValor = Math.min(
+      precioTotalBruto,
+      Math.max(0, convertAmountCurrency(creditoDescuento, creditoDescuentoMoneda, data.currency, data.tasaBCV))
+    );
+    const precioTotal = precioTotalBruto - telDescuentoValor;
     const costoTelefono = Number(prod.costo) || 0;
     const inicial = Number(creditoInicial) || 0;
     const n = Number(creditoCuotas) || 1;
@@ -2591,10 +2605,10 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
       numero: numeroFactura,
       fecha: todayISO(),
       cliente: { ...cliente },
-      items: [{ descripcion: `Teléfono a crédito · ${prod.nombre}`, monto: precioTotal }],
+      items: [{ descripcion: `Teléfono a crédito · ${prod.nombre}`, monto: precioTotalBruto }],
       pagos,
-      totalBruto: precioTotal,
-      descuento: 0,
+      totalBruto: precioTotalBruto,
+      descuento: telDescuentoValor,
       total: precioTotal,
       cobrado: inicial,
       esCashea: false,
@@ -2610,13 +2624,18 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   };
 
   // ---------- Accesorio/Repuesto a crédito (misma modalidad que Teléfono a crédito, para Cashea/
-  // Chollo/Crédito propio) ----------
+  // Crédito propio) ----------
   const submitAccesorioCredito = () => {
     const prod = data.products.find((p) => p.id === accProductId);
     if (!cliente.nombre.trim() || !prod) return;
     const cantidad = Math.max(1, Number(accCantidad) || 1);
     const precioUnitCredito = precioCreditoTelefono(prod, accCreditoPlataforma);
-    const precioTotal = precioUnitCredito * cantidad;
+    const precioTotalBruto = precioUnitCredito * cantidad;
+    const accDescuentoValor = Math.min(
+      precioTotalBruto,
+      Math.max(0, convertAmountCurrency(accCreditoDescuento, accCreditoDescuentoMoneda, data.currency, data.tasaBCV))
+    );
+    const precioTotal = precioTotalBruto - accDescuentoValor;
     const costoUnit = Number(prod.costo) || 0;
     const costoTotal = costoUnit * cantidad;
     const inicial = Number(accCreditoInicial) || 0;
@@ -2691,10 +2710,10 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
       numero: numeroFactura,
       fecha: todayISO(),
       cliente: { ...cliente },
-      items: [{ descripcion: `Accesorio/Repuesto a crédito · ${prod.nombre}${cantidad > 1 ? " × " + cantidad : ""}`, monto: precioTotal }],
+      items: [{ descripcion: `Accesorio/Repuesto a crédito · ${prod.nombre}${cantidad > 1 ? " × " + cantidad : ""}`, monto: precioTotalBruto }],
       pagos,
-      totalBruto: precioTotal,
-      descuento: 0,
+      totalBruto: precioTotalBruto,
+      descuento: accDescuentoValor,
       total: precioTotal,
       cobrado: inicial,
       esCashea: false,
@@ -2979,11 +2998,11 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
               <>
                 <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 10 }}>
                   Misma modalidad que un teléfono a crédito: se factura aparte de inmediato (no se agrega al carrito), con
-                  inicial + cuotas, y la plataforma (Cashea/Chollo) te paga el neto financiado más adelante.
+                  inicial + cuotas, y la plataforma (Cashea) te paga el neto financiado más adelante.
                 </div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: "var(--color-text-muted)" }}>Plataforma de financiamiento</label>
                 <div className="subtype-toggle" style={{ marginBottom: 12 }}>
-                  {CREDIT_PLATFORMS.map((p) => (
+                  {ACC_CREDIT_PLATFORMS.map((p) => (
                     <button
                       key={p}
                       className={accCreditoPlataforma === p ? "selected" : ""}
@@ -3009,6 +3028,18 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                     <label>Fecha 1ra cuota</label>
                     <input type="date" value={accCreditoFecha} onChange={(e) => setAccCreditoFecha(e.target.value)} />
                   </div>
+                  <div className="field">
+                    <label>Descuento (opcional)</label>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input
+                        type="number"
+                        value={accCreditoDescuento}
+                        onChange={(e) => setAccCreditoDescuento(e.target.value)}
+                        placeholder="0.00"
+                      />
+                      <MonedaToggle value={accCreditoDescuentoMoneda} onChange={setAccCreditoDescuentoMoneda} />
+                    </div>
+                  </div>
                   {accCreditoPlataforma !== "Crédito propio" && (
                     <div className="field">
                       <label>% comisión {accCreditoPlataforma} (uso interno)</label>
@@ -3033,14 +3064,25 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                   const faltaCliente = !cliente.nombre.trim();
                   const faltaProducto = !prodSeleccionado;
                   const cantidadNum = Math.max(1, Number(accCantidad) || 1);
-                  const precioTotalPreview = precioCreditoTelefono(prodSeleccionado, accCreditoPlataforma) * cantidadNum;
+                  const precioTotalBrutoPreview = precioCreditoTelefono(prodSeleccionado, accCreditoPlataforma) * cantidadNum;
+                  const accDescuentoPreview = Math.min(
+                    precioTotalBrutoPreview,
+                    Math.max(0, convertAmountCurrency(accCreditoDescuento, accCreditoDescuentoMoneda, data.currency, data.tasaBCV))
+                  );
+                  const precioTotalPreview = precioTotalBrutoPreview - accDescuentoPreview;
                   const financiadoPreview = Math.max(0, precioTotalPreview - inicialNum);
                   return (
                     <div className="receipt-box">
                       {prodSeleccionado && accCreditoPlataforma !== "Crédito propio" && (
                         <div className="receipt-row">
                           <span>Precio por {accCreditoPlataforma} (Lista de Precios){cantidadNum > 1 ? ` × ${cantidadNum}` : ""}</span>
-                          <span style={{ fontWeight: 800 }}>{money(precioTotalPreview)}</span>
+                          <span style={{ fontWeight: 800 }}>{money(precioTotalBrutoPreview)}</span>
+                        </div>
+                      )}
+                      {accDescuentoPreview > 0.005 && (
+                        <div className="receipt-row receipt-muted">
+                          <span>Descuento</span>
+                          <span>− {money(accDescuentoPreview)}</span>
                         </div>
                       )}
                       <div className="receipt-row">
@@ -3189,6 +3231,18 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                     <label>Fecha 1ra cuota</label>
                     <input type="date" value={creditoFecha} onChange={(e) => setCreditoFecha(e.target.value)} />
                   </div>
+                  <div className="field">
+                    <label>Descuento (opcional)</label>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input
+                        type="number"
+                        value={creditoDescuento}
+                        onChange={(e) => setCreditoDescuento(e.target.value)}
+                        placeholder="0.00"
+                      />
+                      <MonedaToggle value={creditoDescuentoMoneda} onChange={setCreditoDescuentoMoneda} />
+                    </div>
+                  </div>
                   {creditoPlataforma !== "Crédito propio" && (
                     <div className="field">
                       <label>% comisión {creditoPlataforma} (uso interno)</label>
@@ -3212,14 +3266,25 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                   const prodSeleccionado = data.products.find((p) => p.id === telProductId);
                   const faltaCliente = !cliente.nombre.trim();
                   const faltaEquipo = !prodSeleccionado;
-                  const precioTotalPreview = precioCreditoTelefono(prodSeleccionado, creditoPlataforma);
+                  const precioTotalBrutoPreview = precioCreditoTelefono(prodSeleccionado, creditoPlataforma);
+                  const telDescuentoPreview = Math.min(
+                    precioTotalBrutoPreview,
+                    Math.max(0, convertAmountCurrency(creditoDescuento, creditoDescuentoMoneda, data.currency, data.tasaBCV))
+                  );
+                  const precioTotalPreview = precioTotalBrutoPreview - telDescuentoPreview;
                   const financiadoPreview = Math.max(0, precioTotalPreview - inicialNum);
                   return (
                     <div className="receipt-box">
                       {prodSeleccionado && creditoPlataforma !== "Crédito propio" && (
                         <div className="receipt-row">
                           <span>Precio del equipo por {creditoPlataforma} (Lista de Precios)</span>
-                          <span style={{ fontWeight: 800 }}>{money(precioTotalPreview)}</span>
+                          <span style={{ fontWeight: 800 }}>{money(precioTotalBrutoPreview)}</span>
+                        </div>
+                      )}
+                      {telDescuentoPreview > 0.005 && (
+                        <div className="receipt-row receipt-muted">
+                          <span>Descuento</span>
+                          <span>− {money(telDescuentoPreview)}</span>
                         </div>
                       )}
                       <div className="receipt-row">
