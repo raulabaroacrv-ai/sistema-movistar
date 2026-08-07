@@ -42,9 +42,6 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
 } from "recharts";
 import { supabase, supabaseConfigured, loadRemoteData, saveRemoteData } from "./supabaseClient";
 
@@ -284,6 +281,23 @@ function toNativeCurrency(monto, metodo, nativeCurrency, tasa) {
     return esBs ? (Number(monto) || 0) / t : Number(monto) || 0;
   }
   return esBs ? Number(monto) || 0 : (Number(monto) || 0) * t;
+}
+
+// Agrupa una lista de gastos por concepto para el resumen "Por concepto" — normaliza el texto
+// (recorta espacios, colapsa espacios dobles, ignora mayúsculas) solo para decidir si dos gastos
+// son "la misma cuenta", porque el mismo concepto tecleado dos veces distinto (p. ej. "Alquiler "
+// con espacio de más) no debería aparecer como dos filas separadas. Se usa tanto para el resumen
+// de un mes específico (Gastos) como para el del mes en curso (Resumen/Dashboard).
+function agruparGastosPorConcepto(gastos, currency, tasaInterna) {
+  const map = {};
+  (gastos || []).forEach((g) => {
+    const etiqueta = (g.concepto || "Otro").trim().replace(/\s+/g, " ") || "Otro";
+    const key = etiqueta.toLowerCase();
+    const montoNativo = toNativeCurrency(g.monto, g.metodo, currency, tasaInterna);
+    if (!map[key]) map[key] = { name: etiqueta, value: 0 };
+    map[key].value += montoNativo;
+  });
+  return Object.values(map);
 }
 
 // Converts a declared price from whichever currency the person typed it in (USD or VES)
@@ -1261,28 +1275,21 @@ export default function App() {
     return Object.values(byMonth).sort((a, b) => a.mes.localeCompare(b.mes));
   }, [data.sales]);
 
-  // Agrupa por concepto de forma flexible: "Sueldo Maria", "SUELDO MARIA" y "sueldo maria " (con
-  // espacio de más) son el mismo gasto para efectos de este resumen — solo cambia cómo se escribió
-  // esa vez al registrarlo. Sin esto, cada variación de mayúsculas/espacios aparecía como una fila
-  // aparte y "duplicaba" gastos que en realidad son la misma cuenta. Se normaliza (recorta espacios,
-  // colapsa espacios dobles, ignora mayúsculas) solo para AGRUPAR — el nombre que se muestra es el
-  // de la primera vez que se registró ese concepto, tal como se escribió.
+  // Gastos del negocio del MES EN CURSO solamente — no acumulativo. Cada mes empieza en $0 y
+  // acumula solo lo que se registre desde su primer día; los meses que ya cerraron quedan fijos
+  // con su propio total, consultables desde la pestaña Gastos con su selector de mes, en vez de
+  // mezclarse en un total histórico que crece para siempre.
   const gastosPorConcepto = useMemo(() => {
-    const map = {};
-    (data.gastosGenerales || []).forEach((g) => {
-      const etiqueta = (g.concepto || "Otro").trim().replace(/\s+/g, " ") || "Otro";
-      const key = etiqueta.toLowerCase();
-      const montoNativo = toNativeCurrency(g.monto, g.metodo, data.currency, data.tasaInterna);
-      if (!map[key]) map[key] = { name: etiqueta, value: 0 };
-      map[key].value += montoNativo;
-    });
-    return Object.values(map);
+    const mesActual = todayISO().slice(0, 7);
+    const gastosDelMes = (data.gastosGenerales || []).filter((g) => (g.fecha || "").slice(0, 7) === mesActual);
+    return agruparGastosPorConcepto(gastosDelMes, data.currency, data.tasaInterna);
   }, [data.gastosGenerales, data.currency, data.tasaInterna]);
 
-  // Producto más vendido: cuenta unidades reales vendidas a clientes (Accesorios/Repuestos,
-  // Teléfonos de contado y a crédito) — no incluye SIM/eSIM de Línea Nueva o Cambio de línea,
-  // porque esas no se "venden" a un precio propio, son un insumo del servicio de activación.
-  const productoMasVendido = useMemo(() => {
+  // Ranking de productos más vendidos: cuenta unidades reales vendidas a clientes
+  // (Accesorios/Repuestos, Teléfonos de contado y a crédito) — no incluye SIM/eSIM de Línea Nueva
+  // o Cambio de línea, porque esas no se "venden" a un precio propio, son un insumo del servicio
+  // de activación. Se guarda el ranking completo (no solo el primero) para poder mostrar un top 5.
+  const productosMasVendidos = useMemo(() => {
     const map = {};
     const sumar = (productId, nombre, unidades) => {
       if (!productId) return;
@@ -1298,8 +1305,7 @@ export default function App() {
         sumar(s.productId, s.nombre, Number(s.cantidad) || 1);
       }
     });
-    const ranking = Object.values(map).sort((a, b) => b.unidades - a.unidades);
-    return ranking[0] || null;
+    return Object.values(map).sort((a, b) => b.unidades - a.unidades);
   }, [data.sales]);
 
   const walletBalances = useMemo(() => {
@@ -1631,7 +1637,7 @@ export default function App() {
             money={money}
             chartData={chartData}
             gastosPorConcepto={gastosPorConcepto}
-            productoMasVendido={productoMasVendido}
+            productosMasVendidos={productosMasVendidos}
             PIE_COLORS={PIE_COLORS}
             bcvSync={bcvSync}
             syncTasaBCV={syncTasaBCV}
@@ -1648,7 +1654,7 @@ export default function App() {
         {tab === "prestamos" && <Prestamos data={data} setData={setData} walletBalances={walletBalances} />}
         {tab === "creditos" && <Creditos data={data} setData={setData} money={money} />}
         {tab === "cashea" && <RegistroCashea data={data} />}
-        {tab === "gastos" && <GastosView data={data} setData={setData} money={money} gastosPorConcepto={gastosPorConcepto} PIE_COLORS={PIE_COLORS} walletBalances={walletBalances} />}
+        {tab === "gastos" && <GastosView data={data} setData={setData} money={money} PIE_COLORS={PIE_COLORS} walletBalances={walletBalances} />}
         {tab === "billetera" && <Billetera data={data} setData={setData} walletBalances={walletBalances} />}
         {tab === "esim" && <EsimView data={data} setData={setData} />}
       </main>
@@ -1667,8 +1673,15 @@ const labelMes = (key) => {
   const idx = Number(m) - 1;
   return `${MES_LABEL[idx] || m} ${y}`;
 };
+// Mueve una clave "YYYY-MM" un número de meses hacia adelante (delta positivo) o atrás (negativo),
+// para el selector de mes de Gastos.
+const shiftMes = (key, delta) => {
+  const [y, m] = (key || todayISO().slice(0, 7)).split("-").map(Number);
+  const d = new Date(y, (m - 1) + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
 
-function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, productoMasVendido, PIE_COLORS, bcvSync, syncTasaBCV, setTab }) {
+function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, productosMasVendidos, PIE_COLORS, bcvSync, syncTasaBCV, setTab }) {
   const [verLineasActivadas, setVerLineasActivadas] = useState(false);
   const [verComisiones, setVerComisiones] = useState(false);
   const [nuevoDeposito, setNuevoDeposito] = useState({ fecha: todayISO(), tipo: "Adelanto", montoBs: "", nota: "" });
@@ -1945,14 +1958,6 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
           sub={metrics.stockBajo.length ? "Ver detalle en Inventario →" : "Todo en orden"}
           onClick={setTab ? () => setTab("inventario") : undefined}
         />
-        <Card
-          icon={Boxes}
-          tone="primary"
-          label="Producto más vendido"
-          value={productoMasVendido ? productoMasVendido.nombre : "Sin datos aún"}
-          sub={productoMasVendido ? `${productoMasVendido.unidades} unidad${productoMasVendido.unidades === 1 ? "" : "es"} vendidas` : "Aún no hay ventas registradas"}
-          onClick={setTab ? () => setTab("inventario") : undefined}
-        />
       </div>
 
       <div className="panel">
@@ -1999,33 +2004,76 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
         )}
       </div>
 
-      <div className="panel">
-        <div className="panel-title">
-          <Receipt size={16} /> Gastos del negocio
-        </div>
-        {gastosPorConcepto.length === 0 ? (
-          <div className="empty-state">Aún no hay gastos registrados.</div>
-        ) : (
-          (() => {
-            const ordenados = [...gastosPorConcepto].sort((a, b) => b.value - a.value);
-            const max = ordenados[0].value || 1;
-            const totalGastos = ordenados.reduce((s, g) => s + g.value, 0);
-            return (
-              <div>
-                <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 14 }}>
-                  Total: <strong style={{ color: "var(--color-text)" }}>{money(totalGastos)}</strong> · por concepto
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div className="panel">
+          <div className="panel-title">
+            <Receipt size={16} /> Gastos del negocio · {labelMes(todayISO().slice(0, 7))}
+          </div>
+          {gastosPorConcepto.length === 0 ? (
+            <div className="empty-state">Todavía no hay gastos registrados este mes.</div>
+          ) : (
+            (() => {
+              const ordenados = [...gastosPorConcepto].sort((a, b) => b.value - a.value);
+              const max = ordenados[0].value || 1;
+              const totalGastos = ordenados.reduce((s, g) => s + g.value, 0);
+              return (
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 14 }}>
+                    Total del mes: <strong style={{ color: "var(--color-text)" }}>{money(totalGastos)}</strong> · por concepto · el
+                    historial completo está en la pestaña Gastos
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {ordenados.map((g, i) => (
+                      <div key={g.name}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+                          <span style={{ fontWeight: 600 }}>{g.name}</span>
+                          <span style={{ fontWeight: 700 }}>{money(g.value)}</span>
+                        </div>
+                        <div style={{ background: "var(--color-bg)", borderRadius: 999, height: 8, overflow: "hidden" }}>
+                          <div
+                            style={{
+                              width: `${Math.max(3, (g.value / max) * 100)}%`,
+                              height: "100%",
+                              borderRadius: 999,
+                              background: PIE_COLORS[i % PIE_COLORS.length],
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
+              );
+            })()
+          )}
+        </div>
+
+        <div className="panel">
+          <div className="panel-title">
+            <Boxes size={16} /> Top 5 productos más vendidos
+          </div>
+          {productosMasVendidos.length === 0 ? (
+            <div className="empty-state">Todavía no hay ventas registradas.</div>
+          ) : (
+            (() => {
+              const top5 = productosMasVendidos.slice(0, 5);
+              const max = top5[0].unidades || 1;
+              return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  {ordenados.map((g, i) => (
-                    <div key={g.name}>
+                  {top5.map((p, i) => (
+                    <div key={p.nombre + i}>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
-                        <span style={{ fontWeight: 600 }}>{g.name}</span>
-                        <span style={{ fontWeight: 700 }}>{money(g.value)}</span>
+                        <span style={{ fontWeight: 600 }}>
+                          {i + 1}. {p.nombre}
+                        </span>
+                        <span style={{ fontWeight: 700 }}>
+                          {p.unidades} unidad{p.unidades === 1 ? "" : "es"}
+                        </span>
                       </div>
                       <div style={{ background: "var(--color-bg)", borderRadius: 999, height: 8, overflow: "hidden" }}>
                         <div
                           style={{
-                            width: `${Math.max(3, (g.value / max) * 100)}%`,
+                            width: `${Math.max(3, (p.unidades / max) * 100)}%`,
                             height: "100%",
                             borderRadius: 999,
                             background: PIE_COLORS[i % PIE_COLORS.length],
@@ -2035,10 +2083,10 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
                     </div>
                   ))}
                 </div>
-              </div>
-            );
-          })()
-        )}
+              );
+            })()
+          )}
+        </div>
       </div>
     </>
   );
@@ -6073,10 +6121,12 @@ function RegistroCashea({ data }) {
   );
 }
 
-function GastosView({ data, setData, money, gastosPorConcepto, PIE_COLORS, walletBalances }) {
+function GastosView({ data, setData, money, PIE_COLORS, walletBalances }) {
   const [concepto, setConcepto] = useState("");
   const [monto, setMonto] = useState("");
   const [metodo, setMetodo] = useState("Efectivo");
+  const mesActualKey = todayISO().slice(0, 7);
+  const [mesSeleccionado, setMesSeleccionado] = useState(mesActualKey);
 
   const cuenta = METHOD_TO_ACCOUNT[metodo];
   const disponible = walletBalances[cuenta] || 0;
@@ -6090,12 +6140,40 @@ function GastosView({ data, setData, money, gastosPorConcepto, PIE_COLORS, walle
     setData((d) => ({ ...d, gastosGenerales: [registro, ...(d.gastosGenerales || [])] }));
     setConcepto("");
     setMonto("");
+    // Un gasto nuevo siempre queda fechado hoy, así que si se estaba viendo un mes archivado,
+    // saltamos de vuelta al mes en curso para que el registro recién creado aparezca de inmediato.
+    setMesSeleccionado(mesActualKey);
   };
 
   const removeGasto = (id) => setData((d) => ({ ...d, gastosGenerales: d.gastosGenerales.filter((g) => g.id !== id) }));
 
-  const gastos = [...(data.gastosGenerales || [])].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  const todosLosGastos = [...(data.gastosGenerales || [])].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+
+  // Sugerencias de concepto: TODO el historial, no solo el mes que se esté viendo — así "Sueldo
+  // María" se sigue autocompletando igual aunque ya haya pasado a un mes archivado.
+  const conceptosConocidos = useMemo(() => {
+    const seen = new Map();
+    (data.gastosGenerales || []).forEach((g) => {
+      const etiqueta = (g.concepto || "").trim().replace(/\s+/g, " ");
+      if (etiqueta && !seen.has(etiqueta.toLowerCase())) seen.set(etiqueta.toLowerCase(), etiqueta);
+    });
+    return Array.from(seen.values());
+  }, [data.gastosGenerales]);
+
+  // Meses con al menos un gasto, más el mes en curso aunque todavía esté en $0, para el selector.
+  const mesesConDatos = useMemo(() => {
+    const set = new Set((data.gastosGenerales || []).map((g) => (g.fecha || "").slice(0, 7)).filter(Boolean));
+    set.add(mesActualKey);
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [data.gastosGenerales, mesActualKey]);
+
+  const gastos = todosLosGastos.filter((g) => (g.fecha || "").slice(0, 7) === mesSeleccionado);
   const total = gastos.reduce((s, g) => s + toNativeCurrency(g.monto, g.metodo, data.currency, data.tasaInterna), 0);
+  const gastosPorConceptoMes = agruparGastosPorConcepto(gastos, data.currency, data.tasaInterna);
+  const esMesActual = mesSeleccionado === mesActualKey;
+  const puedeAvanzar = mesSeleccionado < mesActualKey;
+  const ordenadosPorConcepto = [...gastosPorConceptoMes].sort((a, b) => b.value - a.value);
+  const maxConcepto = ordenadosPorConcepto[0] ? ordenadosPorConcepto[0].value || 1 : 1;
 
   return (
     <>
@@ -6113,11 +6191,11 @@ function GastosView({ data, setData, money, gastosPorConcepto, PIE_COLORS, walle
               list="conceptos-existentes"
             />
             {/* Sugiere conceptos ya usados para que, por ejemplo, "Sueldo María" se escriba igual
-                cada vez — así el resumen de Gastos del negocio los agrupa en una sola cuenta en vez
-                de crear una fila nueva por cada variación de mayúsculas o espacios. */}
+                cada vez — así el resumen por concepto los agrupa en una sola cuenta en vez de
+                crear una fila nueva por cada variación de mayúsculas o espacios. */}
             <datalist id="conceptos-existentes">
-              {gastosPorConcepto.map((g) => (
-                <option key={g.name} value={g.name} />
+              {conceptosConocidos.map((nombre) => (
+                <option key={nombre} value={nombre} />
               ))}
             </datalist>
           </div>
@@ -6153,38 +6231,98 @@ function GastosView({ data, setData, money, gastosPorConcepto, PIE_COLORS, walle
         </button>
         <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
           El negocio puede tener infinidad de gastos (alquiler, sueldos, transporte, servicios...): regístralos aquí con su
-          método de pago para que se descuenten de la Billetera correspondiente.
+          método de pago para que se descuenten de la Billetera correspondiente. Cada gasto queda fechado con el día de hoy.
+        </div>
+      </div>
+
+      <div className="panel">
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <button className="icon-btn" title="Mes anterior" onClick={() => setMesSeleccionado((m) => shiftMes(m, -1))}>
+            <ChevronDown size={15} style={{ transform: "rotate(90deg)" }} />
+          </button>
+          <div style={{ fontWeight: 800, fontSize: 15, minWidth: 150, textAlign: "center" }}>{labelMes(mesSeleccionado)}</div>
+          <button
+            className="icon-btn"
+            title="Mes siguiente"
+            disabled={!puedeAvanzar}
+            onClick={() => puedeAvanzar && setMesSeleccionado((m) => shiftMes(m, 1))}
+            style={!puedeAvanzar ? { opacity: 0.35, cursor: "not-allowed" } : undefined}
+          >
+            <ChevronDown size={15} style={{ transform: "rotate(-90deg)" }} />
+          </button>
+          {esMesActual ? (
+            <Badge tone="warning">Mes en curso</Badge>
+          ) : (
+            <button className="link-btn" onClick={() => setMesSeleccionado(mesActualKey)}>
+              Volver al mes actual
+            </button>
+          )}
+          {mesesConDatos.length > 1 && (
+            <select
+              value={mesSeleccionado}
+              onChange={(e) => setMesSeleccionado(e.target.value)}
+              style={{ marginLeft: "auto", maxWidth: 180 }}
+            >
+              {mesesConDatos.map((m) => (
+                <option key={m} value={m}>
+                  {labelMes(m)}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 10 }}>
+          Cada mes se cuenta aparte y arranca en $0 — no es un acumulado histórico. Los meses que ya terminaron quedan
+          archivados aquí mismo, con su propio total, sin mezclarse con el mes en curso.
         </div>
       </div>
 
       <div className="stat-grid">
-        <Card icon={Receipt} tone="danger" label="Total de gastos del negocio" value={money(total)} sub={`${gastos.length} gastos registrados`} />
+        <Card
+          icon={Receipt}
+          tone="danger"
+          label={`Gastos de ${labelMes(mesSeleccionado)}`}
+          value={money(total)}
+          sub={`${gastos.length} gasto${gastos.length === 1 ? "" : "s"} registrado${gastos.length === 1 ? "" : "s"}`}
+        />
       </div>
-
-      {gastosPorConcepto.length > 0 && (
-        <div className="panel">
-          <div className="panel-title">
-            <Receipt size={16} /> Por concepto
-          </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <PieChart>
-              <Pie data={gastosPorConcepto} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={(e) => e.name}>
-                {gastosPorConcepto.map((_, i) => (
-                  <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(v) => money(v)} />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      )}
 
       <div className="panel">
         <div className="panel-title">
-          <CalendarClock size={16} /> Detalle de gastos
+          <Receipt size={16} /> Por concepto · {labelMes(mesSeleccionado)}
+        </div>
+        {ordenadosPorConcepto.length === 0 ? (
+          <div className="empty-state">Sin gastos registrados en {labelMes(mesSeleccionado)}.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {ordenadosPorConcepto.map((g, i) => (
+              <div key={g.name}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600 }}>{g.name}</span>
+                  <span style={{ fontWeight: 700 }}>{money(g.value)}</span>
+                </div>
+                <div style={{ background: "var(--color-bg)", borderRadius: 999, height: 8, overflow: "hidden" }}>
+                  <div
+                    style={{
+                      width: `${Math.max(3, (g.value / maxConcepto) * 100)}%`,
+                      height: "100%",
+                      borderRadius: 999,
+                      background: PIE_COLORS[i % PIE_COLORS.length],
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">
+          <CalendarClock size={16} /> Detalle de gastos · {labelMes(mesSeleccionado)}
         </div>
         {gastos.length === 0 ? (
-          <div className="empty-state">No hay gastos registrados todavía. Agrégalos arriba.</div>
+          <div className="empty-state">No hay gastos registrados en {labelMes(mesSeleccionado)}.</div>
         ) : (
           <table>
             <thead>
