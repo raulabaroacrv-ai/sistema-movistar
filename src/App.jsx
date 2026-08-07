@@ -33,8 +33,11 @@ import {
   Landmark,
 } from "lucide-react";
 import {
-  BarChart,
   Bar,
+  ComposedChart,
+  Line,
+  Area,
+  CartesianGrid,
   XAxis,
   YAxis,
   Tooltip,
@@ -1268,15 +1271,27 @@ export default function App() {
     return Object.entries(map).map(([name, value]) => ({ name, value }));
   }, [data.gastosGenerales, data.currency, data.tasaInterna]);
 
-  const ingresosPorMetodoPago = useMemo(() => {
+  // Producto más vendido: cuenta unidades reales vendidas a clientes (Accesorios/Repuestos,
+  // Teléfonos de contado y a crédito) — no incluye SIM/eSIM de Línea Nueva o Cambio de línea,
+  // porque esas no se "venden" a un precio propio, son un insumo del servicio de activación.
+  const productoMasVendido = useMemo(() => {
     const map = {};
+    const sumar = (productId, nombre, unidades) => {
+      if (!productId) return;
+      if (!map[productId]) map[productId] = { nombre: nombre || "Producto", unidades: 0 };
+      map[productId].unidades += unidades;
+    };
     data.sales.forEach((s) => {
-      (s.pagos || []).forEach((p) => {
-        const key = p.metodo || "Otro";
-        map[key] = (map[key] || 0) + (Number(p.monto) || 0);
-      });
+      if (s.tipo === "Accesorios" && Array.isArray(s.items)) {
+        s.items.forEach((it) => sumar(it.productId, it.nombre, Number(it.cantidad) || 0));
+      } else if (s.tipo === "Teléfono Contado" || s.tipo === "Teléfono Crédito") {
+        sumar(s.productId, s.nombre, 1);
+      } else if (s.tipo === "Accesorio Crédito") {
+        sumar(s.productId, s.nombre, Number(s.cantidad) || 1);
+      }
     });
-    return Object.entries(map).map(([name, value]) => ({ name, value }));
+    const ranking = Object.values(map).sort((a, b) => b.unidades - a.unidades);
+    return ranking[0] || null;
   }, [data.sales]);
 
   const walletBalances = useMemo(() => {
@@ -1608,7 +1623,7 @@ export default function App() {
             money={money}
             chartData={chartData}
             gastosPorConcepto={gastosPorConcepto}
-            ingresosPorMetodoPago={ingresosPorMetodoPago}
+            productoMasVendido={productoMasVendido}
             PIE_COLORS={PIE_COLORS}
             bcvSync={bcvSync}
             syncTasaBCV={syncTasaBCV}
@@ -1645,7 +1660,7 @@ const labelMes = (key) => {
   return `${MES_LABEL[idx] || m} ${y}`;
 };
 
-function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, ingresosPorMetodoPago, PIE_COLORS, bcvSync, syncTasaBCV, setTab }) {
+function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, productoMasVendido, PIE_COLORS, bcvSync, syncTasaBCV, setTab }) {
   const [verLineasActivadas, setVerLineasActivadas] = useState(false);
   const [verComisiones, setVerComisiones] = useState(false);
   const [nuevoDeposito, setNuevoDeposito] = useState({ fecha: todayISO(), tipo: "Adelanto", montoBs: "", nota: "" });
@@ -1922,6 +1937,14 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
           sub={metrics.stockBajo.length ? "Ver detalle en Inventario →" : "Todo en orden"}
           onClick={setTab ? () => setTab("inventario") : undefined}
         />
+        <Card
+          icon={Boxes}
+          tone="primary"
+          label="Producto más vendido"
+          value={productoMasVendido ? productoMasVendido.nombre : "Sin datos aún"}
+          sub={productoMasVendido ? `${productoMasVendido.unidades} unidad${productoMasVendido.unidades === 1 ? "" : "es"} vendidas` : "Aún no hay ventas registradas"}
+          onClick={setTab ? () => setTab("inventario") : undefined}
+        />
       </div>
 
       <div className="panel">
@@ -1931,52 +1954,82 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
         {chartData.length === 0 ? (
           <div className="empty-state">Aún no hay ventas registradas.</div>
         ) : (
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={chartData}>
-              <XAxis dataKey="mes" tick={{ fontSize: 11 }} stroke="#94A3B8" />
-              <YAxis tick={{ fontSize: 11 }} stroke="#94A3B8" />
-              <Tooltip formatter={(v, name) => [money(v), name === "ventas" ? "Ventas" : "Ganancia"]} />
-              <Bar dataKey="ventas" fill="#4FB6E8" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="ganancia" fill="#0A5FBF" radius={[4, 4, 0, 0]} />
-            </BarChart>
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={chartData} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="gananciaFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#0A5FBF" stopOpacity={0.28} />
+                  <stop offset="100%" stopColor="#0A5FBF" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical={false} stroke="#E7ECF2" />
+              <XAxis dataKey="mes" tick={{ fontSize: 11 }} stroke="#94A3B8" tickFormatter={(m) => labelMes(m)} />
+              {/* Ventas (cantidad de facturas) a la izquierda, como barras suaves de fondo — solo da
+                  contexto de volumen. Ganancia (dinero) a la derecha, como la línea/área principal,
+                  que es la métrica que realmente importa mirar mes a mes. Antes ambas compartían el
+                  mismo eje pese a tener escalas totalmente distintas (cantidad vs. dinero), lo que
+                  aplastaba una de las dos series y hacía el gráfico difícil de leer. */}
+              <YAxis yAxisId="izq" tick={{ fontSize: 10.5 }} stroke="#B9C3D1" width={28} allowDecimals={false} />
+              <YAxis yAxisId="der" orientation="right" tick={{ fontSize: 10.5 }} stroke="#94A3B8" width={54} tickFormatter={(v) => money(v)} />
+              <Tooltip
+                labelFormatter={(m) => labelMes(m)}
+                formatter={(v, name) => [name === "ventas" ? v : money(v), name === "ventas" ? "Ventas (facturas)" : "Ganancia"]}
+              />
+              <Bar yAxisId="izq" dataKey="ventas" fill="#CFE4F8" radius={[4, 4, 0, 0]} barSize={22} />
+              <Area yAxisId="der" type="monotone" dataKey="ganancia" stroke="none" fill="url(#gananciaFill)" />
+              <Line
+                yAxisId="der"
+                type="monotone"
+                dataKey="ganancia"
+                stroke="#0A5FBF"
+                strokeWidth={2.5}
+                dot={{ r: 3.5, fill: "#0A5FBF", strokeWidth: 0 }}
+                activeDot={{ r: 5 }}
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         )}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: gastosPorConcepto.length && ingresosPorMetodoPago.length ? "1fr 1fr" : "1fr", gap: 16 }}>
-        {gastosPorConcepto.length > 0 && (
-          <div className="panel">
-            <div className="panel-title">
-              <Receipt size={16} /> Gastos de líneas nuevas
-            </div>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie data={gastosPorConcepto} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75} label={(e) => e.name}>
-                  {gastosPorConcepto.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+      <div className="panel">
+        <div className="panel-title">
+          <Receipt size={16} /> Gastos del negocio
+        </div>
+        {gastosPorConcepto.length === 0 ? (
+          <div className="empty-state">Aún no hay gastos registrados.</div>
+        ) : (
+          (() => {
+            const ordenados = [...gastosPorConcepto].sort((a, b) => b.value - a.value);
+            const max = ordenados[0].value || 1;
+            const totalGastos = ordenados.reduce((s, g) => s + g.value, 0);
+            return (
+              <div>
+                <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 14 }}>
+                  Total: <strong style={{ color: "var(--color-text)" }}>{money(totalGastos)}</strong> · por concepto
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {ordenados.map((g, i) => (
+                    <div key={g.name}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+                        <span style={{ fontWeight: 600 }}>{g.name}</span>
+                        <span style={{ fontWeight: 700 }}>{money(g.value)}</span>
+                      </div>
+                      <div style={{ background: "var(--color-bg)", borderRadius: 999, height: 8, overflow: "hidden" }}>
+                        <div
+                          style={{
+                            width: `${Math.max(3, (g.value / max) * 100)}%`,
+                            height: "100%",
+                            borderRadius: 999,
+                            background: PIE_COLORS[i % PIE_COLORS.length],
+                          }}
+                        />
+                      </div>
+                    </div>
                   ))}
-                </Pie>
-                <Tooltip formatter={(v) => money(v)} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-        {ingresosPorMetodoPago.length > 0 && (
-          <div className="panel">
-            <div className="panel-title">
-              <CreditCard size={16} /> Cobros por método de pago
-            </div>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie data={ingresosPorMetodoPago} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75} label={(e) => e.name}>
-                  {ingresosPorMetodoPago.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[(i + 2) % PIE_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(v) => money(v)} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
+                </div>
+              </div>
+            );
+          })()
         )}
       </div>
     </>
