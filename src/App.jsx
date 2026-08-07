@@ -957,6 +957,7 @@ export default function App() {
     ultimoNumeroFactura: 0,
     cholloPct: 17,
     prestamos: [],
+    comisionesMovistar: [],
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -1031,6 +1032,7 @@ export default function App() {
     const ultimoNumeroFactura = parsed.ultimoNumeroFactura || 0;
     const cholloPct = parsed.cholloPct != null ? parsed.cholloPct : 17;
     const prestamos = parsed.prestamos || [];
+    const comisionesMovistar = parsed.comisionesMovistar || [];
     setData((d) => ({
       ...d,
       ...parsed,
@@ -1049,6 +1051,7 @@ export default function App() {
       ultimoNumeroFactura,
       cholloPct,
       prestamos,
+      comisionesMovistar,
     }));
   };
 
@@ -1160,9 +1163,14 @@ export default function App() {
     const accCredito = data.sales.filter((s) => s.tipo === "Accesorio Crédito");
     const cambios = data.sales.filter((s) => s.tipo === "Cambio/Recuperación de Línea");
 
-    const totalComisiones = lineas.reduce((s, l) => s + (Number(l.comision) || 0), 0);
+    // Las comisiones de Movistar ya no se estiman por venta (no se conocen hasta que Movistar
+    // deposita) — se registran como depósitos reales en Bs. desde el panel "Ganancia líneas
+    // nuevas" del Resumen, y se convierten a USD con la tasa interna vigente en el momento de
+    // cada depósito (queda fija, no se recalcula si la tasa cambia después).
+    const totalComisionesUSD = (data.comisionesMovistar || []).reduce((s, c) => s + (Number(c.montoUSD) || 0), 0);
+    const totalComisionesRecibidas = convertAmountCurrency(totalComisionesUSD, "USD", data.currency, data.tasaInterna);
     const totalGastosLineas = lineas.reduce((s, l) => s + (Number(l.costoSim) || 0), 0);
-    const gananciaLineas = totalComisiones - totalGastosLineas;
+    const gananciaLineas = totalComisionesRecibidas - totalGastosLineas;
 
     const ingresosAccesorios = accesorios.reduce((s, a) => s + a.items.reduce((is, it) => is + it.cantidad * it.precioUnit, 0), 0);
     const gananciaAccesorios = accesorios.reduce((s, a) => s + a.ganancia, 0);
@@ -1179,7 +1187,8 @@ export default function App() {
     const gananciaTotal = gananciaLineas + gananciaAccesorios + gananciaTelContado + gananciaCambios;
 
     return {
-      totalComisiones,
+      totalComisionesUSD,
+      totalComisionesRecibidas,
       totalGastosLineas,
       gananciaLineas,
       ingresosAccesorios,
@@ -1602,27 +1611,65 @@ const labelMes = (key) => {
 
 function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, ingresosPorMetodoPago, PIE_COLORS, bcvSync, syncTasaBCV, setTab }) {
   const [verLineasActivadas, setVerLineasActivadas] = useState(false);
+  const [verComisiones, setVerComisiones] = useState(false);
+  const [nuevoDeposito, setNuevoDeposito] = useState({ fecha: todayISO(), tipo: "Adelanto", montoBs: "", nota: "" });
 
-  // Comisiones por líneas activadas, agrupadas por mes calendario (01 al último día de cada mes) —
-  // se calcula solo de las ventas ya registradas, sin necesidad de "cerrar" nada manualmente: el mes
-  // en curso siempre muestra su total en vivo, y los meses anteriores quedan fijos porque ya no se
-  // les agregan más ventas.
-  const comisionesPorMes = useMemo(() => {
+  const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // Líneas activadas por mes calendario (01 al último día de cada mes) — solo cantidad, ya no
+  // dinero: la comisión real que paga Movistar se registra aparte, como depósito, no por venta.
+  const lineasPorMes = useMemo(() => {
     const byMonth = {};
     data.sales
       .filter((s) => s.tipo === "Línea Nueva")
       .forEach((s) => {
         const key = s.fecha ? s.fecha.slice(0, 7) : "s/f";
-        if (!byMonth[key]) byMonth[key] = { mes: key, cantidad: 0, comisiones: 0 };
+        if (!byMonth[key]) byMonth[key] = { mes: key, cantidad: 0 };
         byMonth[key].cantidad += 1;
-        byMonth[key].comisiones += Number(s.comision) || 0;
       });
     return Object.values(byMonth).sort((a, b) => b.mes.localeCompare(a.mes));
   }, [data.sales]);
 
+  // Depósitos reales de comisiones Movistar: Movistar paga en Bs., normalmente un "adelanto" a
+  // inicio del mes que comienza y el "complemento" del mes anterior los días 15 y 20. Cada
+  // depósito se convierte a USD con la tasa interna vigente EN ESE MOMENTO y queda fija — si la
+  // tasa cambia después, los depósitos ya registrados no se recalculan (mismo criterio que se usa
+  // en Opercoll y Préstamos para no mezclar montos ya cobrados con tasas de otro día).
+  const comisionesMovistar = data.comisionesMovistar || [];
+  const comisionesOrdenadas = [...comisionesMovistar].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  const totalComisionesUSD = comisionesMovistar.reduce((s, c) => s + (Number(c.montoUSD) || 0), 0);
+  const gastosLineasUSD = nativeToUSD(metrics.totalGastosLineas, data.currency, data.tasaInterna);
+  const gananciaNetaUSD = totalComisionesUSD - gastosLineasUSD;
+
+  const previewUSD = data.tasaInterna ? (Number(nuevoDeposito.montoBs) || 0) / (Number(data.tasaInterna) || 1) : 0;
+
+  const registrarDeposito = () => {
+    const montoBs = Number(nuevoDeposito.montoBs);
+    if (!(montoBs > 0)) return;
+    const tasa = Number(data.tasaInterna) || 1;
+    setData((d) => ({
+      ...d,
+      comisionesMovistar: [
+        ...(d.comisionesMovistar || []),
+        {
+          id: uid(),
+          fecha: nuevoDeposito.fecha || todayISO(),
+          tipo: nuevoDeposito.tipo,
+          montoBs,
+          tasaInterna: tasa,
+          montoUSD: montoBs / tasa,
+          nota: (nuevoDeposito.nota || "").trim(),
+        },
+      ],
+    }));
+    setNuevoDeposito({ fecha: todayISO(), tipo: "Adelanto", montoBs: "", nota: "" });
+  };
+
+  const eliminarDeposito = (id) => setData((d) => ({ ...d, comisionesMovistar: (d.comisionesMovistar || []).filter((c) => c.id !== id) }));
+
   if (verLineasActivadas) {
     const mesActualKey = todayISO().slice(0, 7);
-    const mesActual = comisionesPorMes.find((m) => m.mes === mesActualKey) || { cantidad: 0, comisiones: 0 };
+    const mesActual = lineasPorMes.find((m) => m.mes === mesActualKey) || { cantidad: 0 };
     return (
       <>
         <button className="btn btn-ghost btn-sm" onClick={() => setVerLineasActivadas(false)} style={{ marginBottom: 14 }}>
@@ -1634,18 +1681,17 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
             tone="primary"
             label={`Líneas activadas · ${labelMes(mesActualKey)} (en curso)`}
             value={mesActual.cantidad}
-            sub={`${money(mesActual.comisiones)} en comisiones este mes`}
           />
         </div>
         <div className="panel">
           <div className="panel-title">
-            <Wifi size={16} /> Comisiones por mes
+            <Wifi size={16} /> Líneas activadas por mes
           </div>
           <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 12 }}>
             Cada mes va del 01 al último día de ese mes. El mes en curso se sigue actualizando con cada línea nueva que
             factures; los meses ya terminados quedan fijos.
           </div>
-          {comisionesPorMes.length === 0 ? (
+          {lineasPorMes.length === 0 ? (
             <div className="empty-state">Todavía no hay líneas nuevas registradas.</div>
           ) : (
             <table>
@@ -1653,11 +1699,10 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
                 <tr>
                   <th>Mes</th>
                   <th>Líneas activadas</th>
-                  <th>Comisiones acumuladas</th>
                 </tr>
               </thead>
               <tbody>
-                {comisionesPorMes.map((m) => (
+                {lineasPorMes.map((m) => (
                   <tr key={m.mes}>
                     <td style={{ fontWeight: 600 }}>
                       {labelMes(m.mes)}
@@ -1668,7 +1713,114 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
                       )}
                     </td>
                     <td>{m.cantidad}</td>
-                    <td style={{ fontWeight: 700 }}>{money(m.comisiones)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  if (verComisiones) {
+    return (
+      <>
+        <button className="btn btn-ghost btn-sm" onClick={() => setVerComisiones(false)} style={{ marginBottom: 14 }}>
+          ← Volver al resumen
+        </button>
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
+          Movistar paga sus comisiones en dos partes: un <strong>adelanto</strong> al comenzar el mes, sobre las líneas que
+          se van a activar, y el <strong>complemento</strong> del mes anterior los días 15 y 20. Registra aquí cada
+          depósito tal como llega a la cuenta (en Bs.) para saber exactamente cuánto entró — el sistema lo convierte a
+          USD con la tasa interna del momento.
+        </div>
+        <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
+          <Card icon={TrendingUp} tone="success" label="Total recibido de Movistar" value={fmtUSD(totalComisionesUSD)} sub={`${comisionesMovistar.length} depósito${comisionesMovistar.length !== 1 ? "s" : ""}`} />
+          <Card icon={Package} tone="primary" label="Gastos de SIM (líneas)" value={fmtUSD(gastosLineasUSD)} />
+          <Card icon={Wallet} tone={gananciaNetaUSD >= 0 ? "success" : "danger"} label="Ganancia neta" value={fmtUSD(gananciaNetaUSD)} />
+        </div>
+
+        <div className="panel">
+          <div className="panel-title">
+            <Plus size={16} /> Registrar depósito de Movistar
+          </div>
+          <div className="form-grid">
+            <div className="field">
+              <label>Fecha</label>
+              <input type="date" value={nuevoDeposito.fecha} onChange={(e) => setNuevoDeposito((f) => ({ ...f, fecha: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>Tipo</label>
+              <select value={nuevoDeposito.tipo} onChange={(e) => setNuevoDeposito((f) => ({ ...f, tipo: e.target.value }))}>
+                <option value="Adelanto">Adelanto (mes que comienza)</option>
+                <option value="Complemento">Complemento (mes anterior)</option>
+                <option value="Otro">Otro</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Monto depositado (Bs.)</label>
+              <input
+                type="number"
+                value={nuevoDeposito.montoBs}
+                onChange={(e) => setNuevoDeposito((f) => ({ ...f, montoBs: e.target.value }))}
+                placeholder="0.00"
+              />
+              {Number(nuevoDeposito.montoBs) > 0 && (
+                <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginTop: 4 }}>
+                  ≈ {fmtUSD(previewUSD)} a la tasa interna actual ({(Number(data.tasaInterna) || 0).toLocaleString("es-VE")} Bs/$)
+                </div>
+              )}
+            </div>
+            <div className="field">
+              <label>Nota (opcional)</label>
+              <input
+                value={nuevoDeposito.nota}
+                onChange={(e) => setNuevoDeposito((f) => ({ ...f, nota: e.target.value }))}
+                placeholder="ej. complemento de julio"
+              />
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={registrarDeposito}>
+            <Check size={14} /> Registrar depósito
+          </button>
+        </div>
+
+        <div className="panel">
+          <div className="panel-title">
+            <Receipt size={16} /> Depósitos registrados
+          </div>
+          {comisionesOrdenadas.length === 0 ? (
+            <div className="empty-state">Todavía no has registrado ningún depósito de Movistar.</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Tipo</th>
+                  <th>Monto Bs.</th>
+                  <th>Tasa usada</th>
+                  <th>Equivalente USD</th>
+                  <th>Nota</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {comisionesOrdenadas.map((c) => (
+                  <tr key={c.id}>
+                    <td>{fmtDate(c.fecha)}</td>
+                    <td>
+                      <Badge tone={c.tipo === "Adelanto" ? "primary" : c.tipo === "Complemento" ? "success" : "neutral"}>{c.tipo}</Badge>
+                    </td>
+                    <td>Bs. {(Number(c.montoBs) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2 })}</td>
+                    <td>{(Number(c.tasaInterna) || 0).toLocaleString("es-VE")}</td>
+                    <td style={{ fontWeight: 700 }}>{fmtUSD(c.montoUSD)}</td>
+                    <td>{c.nota || "-"}</td>
+                    <td>
+                      <button className="link-btn" onClick={() => eliminarDeposito(c.id)}>
+                        Eliminar
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1704,10 +1856,17 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
           tone="primary"
           label="Líneas nuevas activadas"
           value={metrics.countLineas}
-          sub={`${money(metrics.totalComisiones)} en comisiones · clic para ver por mes`}
+          sub="clic para ver por mes"
           onClick={() => setVerLineasActivadas(true)}
         />
-        <Card icon={TrendingUp} tone={metrics.gananciaLineas >= 0 ? "success" : "danger"} label="Ganancia líneas nuevas" value={money(metrics.gananciaLineas)} sub={`Gastos: ${money(metrics.totalGastosLineas)}`} />
+        <Card
+          icon={TrendingUp}
+          tone={metrics.gananciaLineas >= 0 ? "success" : "danger"}
+          label="Ganancia líneas nuevas"
+          value={money(metrics.gananciaLineas)}
+          sub="Comisiones reales Movistar · clic para registrar"
+          onClick={() => setVerComisiones(true)}
+        />
         <Card icon={RefreshCw} tone={metrics.gananciaCambios >= 0 ? "success" : "danger"} label="Cambio/Recuperación de línea" value={metrics.countCambios} sub={`Ganancia: ${money(metrics.gananciaCambios)}`} />
         <Card icon={Package} tone="primary" label="Ganancia accesorios/repuestos" value={money(metrics.gananciaAccesorios)} sub={`${metrics.countAccesorios} ventas · ingresos ${money(metrics.ingresosAccesorios)}`} />
         <Card icon={Smartphone} tone="primary" label="Ganancia teléfonos de contado" value={money(metrics.gananciaTelContado)} sub={`${metrics.countTelContado} ventas`} />
@@ -1797,8 +1956,7 @@ function Clientes({ data, setData, money }) {
   const rows = data.clients.map((c) => {
     const cedulaNorm = (c.cedula || "").trim().toLowerCase();
     const ventas = data.sales.filter((s) => cedulaNorm && (s.clienteCedula || "").trim().toLowerCase() === cedulaNorm);
-    const totalComision = ventas.filter((s) => s.tipo === "Línea Nueva").reduce((s, v) => s + (Number(v.comision) || 0), 0);
-    return { ...c, ventas, totalComision };
+    return { ...c, ventas };
   });
 
   return (
@@ -1844,7 +2002,6 @@ function Clientes({ data, setData, money }) {
                 <th>Cédula</th>
                 <th>Teléfono</th>
                 <th>Ventas</th>
-                <th>Comisión generada</th>
                 <th></th>
               </tr>
             </thead>
@@ -1865,7 +2022,6 @@ function Clientes({ data, setData, money }) {
                       <td>
                         <Badge tone="primary">{c.ventas.length}</Badge>
                       </td>
-                      <td>{money(c.totalComision)}</td>
                       <td>
                         <button className="link-btn" onClick={() => removeClient(c.id)}>
                           Eliminar
@@ -1874,7 +2030,7 @@ function Clientes({ data, setData, money }) {
                     </tr>
                     {isOpen && (
                       <tr>
-                        <td colSpan={7} style={{ border: "none", padding: "0 10px 12px 10px" }}>
+                        <td colSpan={6} style={{ border: "none", padding: "0 10px 12px 10px" }}>
                           <div className="subtable-wrap">
                             <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6, color: "var(--color-text-muted)" }}>
                               Historial de ventas
@@ -2128,7 +2284,6 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
 
   // Línea nueva
   const [planId, setPlanId] = useState("");
-  const [comision, setComision] = useState("");
   const [simCategoria, setSimCategoria] = useState("SIM Card");
   const [montoRecarga, setMontoRecarga] = useState("");
   const [montoRecargaMoneda, setMontoRecargaMoneda] = useState(data.currency);
@@ -2191,7 +2346,6 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
   const resetFormularioItem = () => {
     setTipoVenta(null);
     setPlanId("");
-    setComision("");
     setSimCategoria("SIM Card");
     setMontoRecarga("");
     setMontoRecargaMoneda(data.currency);
@@ -2247,7 +2401,6 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
     const plan = data.planes.find((p) => p.id === planId);
     const sim = simProductActual;
     const costoSim = sim ? Number(sim.costo) || 0 : 0;
-    const comisionNum = Number(comision) || 0;
     // La recarga es un monto de paso (lo que se le cobra al cliente para la recarga, sin margen),
     // así que debe convertirse a la misma tasa (BCV) que se usa para comparar contra lo cobrado —
     // si se usara la tasa interna, el mismo monto en Bs. no cuadraría con "Monto cobrado" y
@@ -2267,7 +2420,6 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
         montoCliente: monto,
         payload: {
           planNombre: plan ? plan.nombre : "",
-          comision: comisionNum,
           simCategoria,
           simProductId: sim ? sim.id : null,
           simNombre: sim ? sim.nombre : simCategoria,
@@ -2278,7 +2430,6 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
       },
     ]);
     setPlanId("");
-    setComision("");
     setMontoRecarga("");
   };
 
@@ -2414,7 +2565,6 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
           clienteCedula: cliente.cedula,
           clienteTelefono: cliente.telefono,
           planNombre: it.payload.planNombre,
-          comision: it.payload.comision,
           simCategoria: it.payload.simCategoria,
           simProductId: it.payload.simProductId,
           simNombre: it.payload.simNombre,
@@ -2422,7 +2572,10 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
           montoRecarga: it.payload.montoRecarga,
           montoRecargaBs: it.payload.montoRecargaBs,
           pagos,
-          ganancia: it.payload.comision - it.payload.costoSim - descuentoDeItem(it),
+          // Ya no se estima ganancia por venta (la comisión real de Movistar se registra aparte,
+          // como depósito, en el panel "Ganancia líneas nuevas" del Resumen) — aquí solo se
+          // refleja el costo de la SIM entregada como un gasto.
+          ganancia: -it.payload.costoSim - descuentoDeItem(it),
         });
         if (it.payload.simProductId) products = decrementStock(products, it.payload.simProductId, 1);
       } else if (it.tipo === "Cambio/Recuperación de Línea") {
@@ -2894,11 +3047,7 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                 <label>Plan</label>
                 <select
                   value={planId}
-                  onChange={(e) => {
-                    setPlanId(e.target.value);
-                    const p = data.planes.find((pl) => pl.id === e.target.value);
-                    if (p) setComision(convertBs(p.comisionBs, data.currency, data.tasaBCV).toFixed(2));
-                  }}
+                  onChange={(e) => setPlanId(e.target.value)}
                 >
                   <option value="">Seleccionar plan...</option>
                   {data.planes.map((p) => (
@@ -2907,10 +3056,6 @@ function Ventas({ data, setData, money, walletBalances, setTab }) {
                     </option>
                   ))}
                 </select>
-              </div>
-              <div className="field">
-                <label>Comisión Movistar</label>
-                <input type="number" value={comision} onChange={(e) => setComision(e.target.value)} placeholder="0.00" />
               </div>
               <div className="field">
                 <label>SIM Card o eSIM entregada</label>
@@ -4458,7 +4603,7 @@ function Inventario({ data, setData, money }) {
           </table>
         )}
         <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
-          Cuando factures una línea nueva en la pestaña Ventas, eliges el plan aquí registrado y la comisión se auto-completa (editable por si Movistar da una promoción puntual). Estos montos son los que Movistar publica en bolívares (Bs.) — si tienes el resto del negocio en USD, cambia el interruptor de moneda arriba a "Bs." antes de revisar tus comisiones para que no se mezclen los símbolos.
+          Cuando factures una línea nueva en la pestaña Ventas, eliges el plan aquí registrado solo como referencia — ya no hace falta escribir la comisión ahí. Regístrala cuando Movistar la deposite de verdad, desde el panel "Ganancia líneas nuevas" en Resumen (clic sobre esa tarjeta), que la convierte automáticamente con la tasa interna del momento.
         </div>
       </div>
     </>
