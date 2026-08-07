@@ -94,15 +94,39 @@ const fmtAccountAmount = (n, currency) => {
   return currency === "USD" ? `$${val}` : `Bs. ${val}`;
 };
 
-// Public, keyless JSON feed that republishes the official BCV rate (bcv.today), so
-// Tasa BCV can stay in sync with the Banco Central de Venezuela without manual entry.
-const BCV_TODAY_API = "https://bcv.today/api/v1/rate.json";
+// Fuentes públicas y sin llave que republican la tasa oficial del BCV, para que "Tasa BCV" se
+// mantenga sincronizada sin cargarla a mano. Se intentan en orden — dolarapi.com resultó ser la
+// más puntual (publica la tasa del día apenas el BCV la difunde); bcv.today quedó como respaldo
+// porque en la práctica se vio quedarse un día atrás (detectado el 2026-08-07: mostraba la tasa
+// del 06/08 como si fuera la vigente, sin avisar que estaba desactualizada). Si la primera fuente
+// falla o da un dato inválido, se intenta la siguiente antes de reportar error.
+const BCV_APIS = [
+  {
+    nombre: "dolarapi.com",
+    url: "https://ve.dolarapi.com/v1/dolares/oficial",
+    parse: (json) => ({ tasa: Number(json.promedio), fechaVigencia: json.fechaActualizacion ? String(json.fechaActualizacion).slice(0, 10) : null }),
+  },
+  {
+    nombre: "bcv.today",
+    url: "https://bcv.today/api/v1/rate.json",
+    parse: (json) => ({ tasa: Number(json.USD), fechaVigencia: json.effective_date || json.date || null }),
+  },
+];
 async function fetchTasaBCV() {
-  const res = await fetch(BCV_TODAY_API);
-  if (!res.ok) throw new Error("BCV Today respondió con error");
-  const json = await res.json();
-  if (!json || !json.USD) throw new Error("Respuesta inesperada de BCV Today");
-  return { tasa: Number(json.USD), fechaVigencia: json.effective_date || json.date || null };
+  let lastError = null;
+  for (const api of BCV_APIS) {
+    try {
+      const res = await fetch(api.url);
+      if (!res.ok) throw new Error(`${api.nombre} respondió con error`);
+      const json = await res.json();
+      const { tasa, fechaVigencia } = api.parse(json);
+      if (!(tasa > 0)) throw new Error(`${api.nombre}: respuesta inesperada`);
+      return { tasa, fechaVigencia, fuente: api.nombre };
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError || new Error("No se pudo obtener la tasa BCV de ninguna fuente");
 }
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -961,7 +985,7 @@ export default function App() {
   });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
-  const [bcvSync, setBcvSync] = useState({ status: "idle", fechaVigencia: null, lastCheck: null, error: null });
+  const [bcvSync, setBcvSync] = useState({ status: "idle", stale: false, fechaVigencia: null, fuente: null, lastCheck: null, error: null });
   const [dataSync, setDataSync] = useState({ status: supabaseConfigured ? "loading" : "local-only", lastSaved: null, error: null });
   const remoteUpdatedAtRef = useRef(null);
   // Timestamp of the last local edit to `data`. Used to avoid the background refresh (below)
@@ -994,11 +1018,16 @@ export default function App() {
   const syncTasaBCV = async () => {
     setBcvSync((s) => ({ ...s, status: "loading" }));
     try {
-      const { tasa, fechaVigencia } = await fetchTasaBCV();
+      const { tasa, fechaVigencia, fuente } = await fetchTasaBCV();
       setData((d) => ({ ...d, tasaBCV: tasa }));
-      setBcvSync({ status: "ok", fechaVigencia, lastCheck: new Date().toISOString(), error: null });
+      // "Vigente hoy" solo si la fecha que reporta la fuente es la de hoy — cualquier otra cosa se
+      // marca como desactualizada en vez de mostrar un "Sincronizado" tranquilo que puede ocultar
+      // que la fuente todavía no publicó la tasa del día (esto fue exactamente lo que pasó el
+      // 2026-08-07, ver comentario junto a BCV_APIS arriba).
+      const stale = !fechaVigencia || fechaVigencia !== todayISO();
+      setBcvSync({ status: "ok", stale, fechaVigencia, fuente, lastCheck: new Date().toISOString(), error: null });
     } catch (e) {
-      setBcvSync((s) => ({ ...s, status: "error", lastCheck: new Date().toISOString(), error: "No se pudo conectar con BCV Today" }));
+      setBcvSync((s) => ({ ...s, status: "error", lastCheck: new Date().toISOString(), error: "No se pudo conectar con ninguna fuente de tasa BCV" }));
     }
   };
 
@@ -1839,14 +1868,20 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
         <button className="icon-btn" title="Sincronizar tasa BCV ahora" onClick={syncTasaBCV} style={{ width: 26, height: 26 }}>
           <RefreshCw size={13} className={bcvSync && bcvSync.status === "loading" ? "spin" : ""} />
         </button>
-        {bcvSync && bcvSync.status === "ok" && (
+        {bcvSync && bcvSync.status === "ok" && !bcvSync.stale && (
           <span style={{ fontSize: 10.5, color: "var(--color-text-muted)" }}>
-            Sincronizado con BCV{bcvSync.fechaVigencia ? ` · vigente ${fmtDate(bcvSync.fechaVigencia)}` : ""}
+            Sincronizado con BCV · vigente hoy{bcvSync.fuente ? ` (${bcvSync.fuente})` : ""}
+          </span>
+        )}
+        {bcvSync && bcvSync.status === "ok" && bcvSync.stale && (
+          <span style={{ fontSize: 10.5, color: "var(--color-warning)", fontWeight: 600 }}>
+            ⚠ La tasa mostrada es de {bcvSync.fechaVigencia ? fmtDate(bcvSync.fechaVigencia) : "una fecha anterior"}, no de hoy — la
+            fuente aún no publica la de hoy. Verifica antes de facturar o ajústala a mano.
           </span>
         )}
         {bcvSync && bcvSync.status === "error" && (
           <span style={{ fontSize: 10.5, color: "var(--color-danger)" }}>
-            No se pudo sincronizar con BCV Today — verifica tu conexión, o ajusta la tasa manualmente.
+            No se pudo sincronizar la tasa BCV — verifica tu conexión, o ajusta la tasa manualmente.
           </span>
         )}
       </div>
