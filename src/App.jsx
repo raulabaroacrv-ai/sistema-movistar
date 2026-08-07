@@ -116,7 +116,7 @@ async function fetchTasaBCV() {
   let lastError = null;
   for (const api of BCV_APIS) {
     try {
-      const res = await fetch(api.url);
+      const res = await fetch(api.url, { cache: "no-store" });
       if (!res.ok) throw new Error(`${api.nombre} respondió con error`);
       const json = await res.json();
       const { tasa, fechaVigencia } = api.parse(json);
@@ -1031,11 +1031,18 @@ export default function App() {
     }
   };
 
+  // Espera a que termine la carga inicial desde Supabase (`loaded`) antes de sincronizar la tasa
+  // BCV. Antes corría en paralelo con esa carga, y como ambas son async, a veces la carga desde
+  // la nube (con la tasa vieja guardada) terminaba DESPUÉS y pisaba la tasa recién sincronizada —
+  // el usuario veía "vigente hoy" pero con el número de ayer. Sincronizando solo después de
+  // `loaded`, la carga de la nube ya terminó y la tasa fresca queda de última, sin que nada la
+  // vuelva a pisar.
   useEffect(() => {
+    if (!loaded) return;
     syncTasaBCV();
     const interval = setInterval(syncTasaBCV, 30 * 60 * 1000); // revisa cada 30 minutos mientras esté abierto
     return () => clearInterval(interval);
-  }, []);
+  }, [loaded]);
 
   // Normaliza un objeto "parsed" (venido de Supabase o de localStorage) rellenando campos que
   // pudieran faltar en datos antiguos, y lo aplica al estado. Se usa tanto en la carga inicial
