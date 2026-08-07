@@ -1261,14 +1261,22 @@ export default function App() {
     return Object.values(byMonth).sort((a, b) => a.mes.localeCompare(b.mes));
   }, [data.sales]);
 
+  // Agrupa por concepto de forma flexible: "Sueldo Maria", "SUELDO MARIA" y "sueldo maria " (con
+  // espacio de más) son el mismo gasto para efectos de este resumen — solo cambia cómo se escribió
+  // esa vez al registrarlo. Sin esto, cada variación de mayúsculas/espacios aparecía como una fila
+  // aparte y "duplicaba" gastos que en realidad son la misma cuenta. Se normaliza (recorta espacios,
+  // colapsa espacios dobles, ignora mayúsculas) solo para AGRUPAR — el nombre que se muestra es el
+  // de la primera vez que se registró ese concepto, tal como se escribió.
   const gastosPorConcepto = useMemo(() => {
     const map = {};
     (data.gastosGenerales || []).forEach((g) => {
-      const key = g.concepto || "Otro";
+      const etiqueta = (g.concepto || "Otro").trim().replace(/\s+/g, " ") || "Otro";
+      const key = etiqueta.toLowerCase();
       const montoNativo = toNativeCurrency(g.monto, g.metodo, data.currency, data.tasaInterna);
-      map[key] = (map[key] || 0) + montoNativo;
+      if (!map[key]) map[key] = { name: etiqueta, value: 0 };
+      map[key].value += montoNativo;
     });
-    return Object.entries(map).map(([name, value]) => ({ name, value }));
+    return Object.values(map);
   }, [data.gastosGenerales, data.currency, data.tasaInterna]);
 
   // Producto más vendido: cuenta unidades reales vendidas a clientes (Accesorios/Repuestos,
@@ -6098,7 +6106,20 @@ function GastosView({ data, setData, money, gastosPorConcepto, PIE_COLORS, walle
         <div className="form-grid">
           <div className="field">
             <label>Concepto</label>
-            <input value={concepto} onChange={(e) => setConcepto(e.target.value)} placeholder="Alquiler, transporte, sueldo, internet..." />
+            <input
+              value={concepto}
+              onChange={(e) => setConcepto(e.target.value)}
+              placeholder="Alquiler, transporte, sueldo, internet..."
+              list="conceptos-existentes"
+            />
+            {/* Sugiere conceptos ya usados para que, por ejemplo, "Sueldo María" se escriba igual
+                cada vez — así el resumen de Gastos del negocio los agrupa en una sola cuenta en vez
+                de crear una fila nueva por cada variación de mayúsculas o espacios. */}
+            <datalist id="conceptos-existentes">
+              {gastosPorConcepto.map((g) => (
+                <option key={g.name} value={g.name} />
+              ))}
+            </datalist>
           </div>
           <div className="field">
             <label>Monto ({currencySymbolFor(metodo)})</label>
