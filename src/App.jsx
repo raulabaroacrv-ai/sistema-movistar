@@ -69,6 +69,10 @@ const METHOD_TO_ACCOUNT = {
   Cashea: "Cashea",
 };
 const WALLET_ACCOUNTS = ["Cuenta Bancaria", "Punto de Venta", "Efectivo", "Zelle", "Binance", "$ Efectivo", "Cashea", "Chollo", "Opercoll"];
+// Cuentas reales donde puede caer un depósito de comisiones de Movistar (se excluyen Cashea/Chollo
+// — saldo pendiente por cobrar de un tercero, no dinero ya recibido — y Opercoll, que tiene su
+// propio flujo de recarga con bono y no es una cuenta de efectivo libre).
+const CUENTAS_DEPOSITO_MOVISTAR = ["Cuenta Bancaria", "Punto de Venta", "Efectivo", "Zelle", "Binance", "$ Efectivo"];
 const ACCOUNT_CURRENCY = {
   "Cuenta Bancaria": "VES",
   "Punto de Venta": "VES",
@@ -1405,6 +1409,16 @@ export default function App() {
       });
     });
 
+    // Money in: depósitos reales de comisiones Movistar, registrados desde el panel "Ganancia
+    // líneas nuevas" del Resumen — se acreditan a la cuenta que se eligió al registrarlos (Cuenta
+    // Bancaria, Zelle, Binance, etc.), en el monto exacto que se escribió (ya en la moneda nativa
+    // de esa cuenta, sin volver a convertir). Los depósitos guardados antes de tener este selector
+    // de cuenta no tienen `cuenta` y por eso no tocan ninguna cuenta — nunca se registró por dónde
+    // había entrado ese dinero.
+    (data.comisionesMovistar || []).forEach((c) => {
+      if (c.cuenta) balances[c.cuenta] += Number(c.monto) || 0;
+    });
+
     return balances;
   }, [
     data.sales,
@@ -1417,6 +1431,7 @@ export default function App() {
     data.transferenciasCuentas,
     data.comprasDivisas,
     data.prestamos,
+    data.comisionesMovistar,
     data.currency,
     data.tasaBCV,
   ]);
@@ -1642,6 +1657,7 @@ export default function App() {
             bcvSync={bcvSync}
             syncTasaBCV={syncTasaBCV}
             setTab={setTab}
+            walletBalances={walletBalances}
           />
         )}
         {tab === "clientes" && <Clientes data={data} setData={setData} money={money} />}
@@ -1681,10 +1697,10 @@ const shiftMes = (key, delta) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
 
-function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, productosMasVendidos, PIE_COLORS, bcvSync, syncTasaBCV, setTab }) {
+function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto, productosMasVendidos, PIE_COLORS, bcvSync, syncTasaBCV, setTab, walletBalances }) {
   const [verLineasActivadas, setVerLineasActivadas] = useState(false);
   const [verComisiones, setVerComisiones] = useState(false);
-  const [nuevoDeposito, setNuevoDeposito] = useState({ fecha: todayISO(), tipo: "Adelanto", montoBs: "", nota: "" });
+  const [nuevoDeposito, setNuevoDeposito] = useState({ fecha: todayISO(), tipo: "Adelanto", cuenta: "Cuenta Bancaria", monto: "", nota: "" });
 
   const fmtUSD = (n) => `$${(Number(n) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -1713,12 +1729,19 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
   const gastosLineasUSD = nativeToUSD(metrics.totalGastosLineas, data.currency, data.tasaInterna);
   const gananciaNetaUSD = totalComisionesUSD - gastosLineasUSD;
 
-  const previewUSD = data.tasaInterna ? (Number(nuevoDeposito.montoBs) || 0) / (Number(data.tasaInterna) || 1) : 0;
+  // La cuenta elegida define en qué moneda se escribe el monto: Bs. para Cuenta Bancaria/Punto de
+  // Venta/Efectivo, $ directo para Zelle/Binance/$ Efectivo — igual que el resto del sistema
+  // distingue cuentas Bs. de cuentas $ (ver ACCOUNT_CURRENCY).
+  const monedaCuentaDeposito = ACCOUNT_CURRENCY[nuevoDeposito.cuenta] || "VES";
+  const montoDepositoNum = Number(nuevoDeposito.monto) || 0;
+  const previewUSD =
+    monedaCuentaDeposito === "USD" ? montoDepositoNum : montoDepositoNum / (Number(data.tasaInterna) || 1);
+  const disponibleCuentaDeposito = (walletBalances && walletBalances[nuevoDeposito.cuenta]) || 0;
 
   const registrarDeposito = () => {
-    const montoBs = Number(nuevoDeposito.montoBs);
-    if (!(montoBs > 0)) return;
+    if (!(montoDepositoNum > 0)) return;
     const tasa = Number(data.tasaInterna) || 1;
+    const montoUSD = monedaCuentaDeposito === "USD" ? montoDepositoNum : montoDepositoNum / tasa;
     setData((d) => ({
       ...d,
       comisionesMovistar: [
@@ -1727,14 +1750,15 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
           id: uid(),
           fecha: nuevoDeposito.fecha || todayISO(),
           tipo: nuevoDeposito.tipo,
-          montoBs,
+          cuenta: nuevoDeposito.cuenta,
+          monto: montoDepositoNum,
           tasaInterna: tasa,
-          montoUSD: montoBs / tasa,
+          montoUSD,
           nota: (nuevoDeposito.nota || "").trim(),
         },
       ],
     }));
-    setNuevoDeposito({ fecha: todayISO(), tipo: "Adelanto", montoBs: "", nota: "" });
+    setNuevoDeposito({ fecha: todayISO(), tipo: "Adelanto", cuenta: "Cuenta Bancaria", monto: "", nota: "" });
   };
 
   const eliminarDeposito = (id) => setData((d) => ({ ...d, comisionesMovistar: (d.comisionesMovistar || []).filter((c) => c.id !== id) }));
@@ -1831,18 +1855,37 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
               </select>
             </div>
             <div className="field">
-              <label>Monto depositado (Bs.)</label>
+              <label>¿Por dónde te pagaron?</label>
+              <select value={nuevoDeposito.cuenta} onChange={(e) => setNuevoDeposito((f) => ({ ...f, cuenta: e.target.value }))}>
+                {CUENTAS_DEPOSITO_MOVISTAR.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginTop: 4 }}>
+                Disponible ahora en {nuevoDeposito.cuenta}: {fmtAccountAmount(disponibleCuentaDeposito, monedaCuentaDeposito)}
+              </div>
+            </div>
+            <div className="field">
+              <label>Monto depositado ({monedaCuentaDeposito === "USD" ? "$" : "Bs."})</label>
               <input
                 type="number"
-                value={nuevoDeposito.montoBs}
-                onChange={(e) => setNuevoDeposito((f) => ({ ...f, montoBs: e.target.value }))}
+                value={nuevoDeposito.monto}
+                onChange={(e) => setNuevoDeposito((f) => ({ ...f, monto: e.target.value }))}
                 placeholder="0.00"
               />
-              {Number(nuevoDeposito.montoBs) > 0 && (
-                <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginTop: 4 }}>
-                  ≈ {fmtUSD(previewUSD)} a la tasa interna actual ({(Number(data.tasaInterna) || 0).toLocaleString("es-VE")} Bs/$)
-                </div>
-              )}
+              {montoDepositoNum > 0 &&
+                (monedaCuentaDeposito === "USD" ? (
+                  <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginTop: 4 }}>
+                    Se acreditará {fmtUSD(montoDepositoNum)} a {nuevoDeposito.cuenta}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginTop: 4 }}>
+                    ≈ {fmtUSD(previewUSD)} a la tasa interna actual ({(Number(data.tasaInterna) || 0).toLocaleString("es-VE")} Bs/$) · se
+                    acreditará a {nuevoDeposito.cuenta}
+                  </div>
+                ))}
             </div>
             <div className="field">
               <label>Nota (opcional)</label>
@@ -1854,7 +1897,7 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
             </div>
           </div>
           <button className="btn btn-primary" onClick={registrarDeposito}>
-            <Check size={14} /> Registrar depósito
+            <Check size={14} /> Registrar depósito y acreditar a {nuevoDeposito.cuenta}
           </button>
         </div>
 
@@ -1870,8 +1913,8 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
                 <tr>
                   <th>Fecha</th>
                   <th>Tipo</th>
-                  <th>Monto Bs.</th>
-                  <th>Tasa usada</th>
+                  <th>Cuenta</th>
+                  <th>Monto acreditado</th>
                   <th>Equivalente USD</th>
                   <th>Nota</th>
                   <th></th>
@@ -1884,8 +1927,12 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
                     <td>
                       <Badge tone={c.tipo === "Adelanto" ? "primary" : c.tipo === "Complemento" ? "success" : "neutral"}>{c.tipo}</Badge>
                     </td>
-                    <td>Bs. {(Number(c.montoBs) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2 })}</td>
-                    <td>{(Number(c.tasaInterna) || 0).toLocaleString("es-VE")}</td>
+                    <td>{c.cuenta ? <Badge tone="neutral">{c.cuenta}</Badge> : "—"}</td>
+                    <td>
+                      {c.cuenta
+                        ? fmtAccountAmount(c.monto, ACCOUNT_CURRENCY[c.cuenta])
+                        : `Bs. ${(Number(c.montoBs) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2 })}`}
+                    </td>
                     <td style={{ fontWeight: 700 }}>{fmtUSD(c.montoUSD)}</td>
                     <td>{c.nota || "-"}</td>
                     <td>
