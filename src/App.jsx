@@ -1763,6 +1763,23 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
 
   const eliminarDeposito = (id) => setData((d) => ({ ...d, comisionesMovistar: (d.comisionesMovistar || []).filter((c) => c.id !== id) }));
 
+  // Depósitos registrados ANTES de que existiera el selector de cuenta no tienen `cuenta`, así que
+  // nunca acreditaron nada a Billetera — se les puede asignar una cuenta ahora mismo desde la
+  // tabla, sin tener que borrarlos y volver a escribirlos. El monto a acreditar sale del mismo
+  // depósito ya guardado: en Bs. si la cuenta elegida es de bolívares, o el equivalente en USD ya
+  // calculado si se elige una cuenta en dólares (Zelle/Binance/$ Efectivo).
+  const asignarCuentaDeposito = (id, cuenta) => {
+    setData((d) => ({
+      ...d,
+      comisionesMovistar: (d.comisionesMovistar || []).map((c) => {
+        if (c.id !== id) return c;
+        const monedaCuenta = ACCOUNT_CURRENCY[cuenta] || "VES";
+        const monto = monedaCuenta === "USD" ? Number(c.montoUSD) || 0 : Number(c.montoBs) || 0;
+        return { ...c, cuenta, monto };
+      }),
+    }));
+  };
+
   if (verLineasActivadas) {
     const mesActualKey = todayISO().slice(0, 7);
     const mesActual = lineasPorMes.find((m) => m.mes === mesActualKey) || { cantidad: 0 };
@@ -1927,11 +1944,30 @@ function Dashboard({ data, setData, metrics, money, chartData, gastosPorConcepto
                     <td>
                       <Badge tone={c.tipo === "Adelanto" ? "primary" : c.tipo === "Complemento" ? "success" : "neutral"}>{c.tipo}</Badge>
                     </td>
-                    <td>{c.cuenta ? <Badge tone="neutral">{c.cuenta}</Badge> : "—"}</td>
+                    <td>
+                      {c.cuenta ? (
+                        <Badge tone="neutral">{c.cuenta}</Badge>
+                      ) : (
+                        <select
+                          defaultValue=""
+                          onChange={(e) => e.target.value && asignarCuentaDeposito(c.id, e.target.value)}
+                          style={{ fontSize: 11.5, padding: "4px 6px" }}
+                        >
+                          <option value="" disabled>
+                            Asignar cuenta…
+                          </option>
+                          {CUENTAS_DEPOSITO_MOVISTAR.map((cta) => (
+                            <option key={cta} value={cta}>
+                              {cta}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </td>
                     <td>
                       {c.cuenta
                         ? fmtAccountAmount(c.monto, ACCOUNT_CURRENCY[c.cuenta])
-                        : `Bs. ${(Number(c.montoBs) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2 })}`}
+                        : `Bs. ${(Number(c.montoBs) || 0).toLocaleString("es-VE", { minimumFractionDigits: 2 })} (sin acreditar aún)`}
                     </td>
                     <td style={{ fontWeight: 700 }}>{fmtUSD(c.montoUSD)}</td>
                     <td>{c.nota || "-"}</td>
